@@ -1,0 +1,8 @@
+import sys
+import os
+
+# Path to your Alios folder
+alios_path = "/Users/haripreetham/Desktop/Autonomy_Research/Alios"
+sys.path.append(alios_path)
+
+from alios_db import register_run
