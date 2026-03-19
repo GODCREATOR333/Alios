@@ -249,9 +249,11 @@ class AliosWindow(QtWidgets.QWidget):
 
         self.view_agent_policy = MazeView(title="Agent: Learned Policy")
         self.view_agent_values = MazeView(title="Agent: Perceived Values (max Q)")
+        self.view_agent_entropy = MazeView(title="Agent: Policy Entropy (Confusion)")
         
         self.agent_tabs.addTab(self.view_agent_policy, "Policy (π)")
         self.agent_tabs.addTab(self.view_agent_values, "Value Heatmap (max Q)")
+        self.agent_tabs.addTab(self.view_agent_entropy, "Entropy (H)")
         
         # Add both Tab Containers to the Splitter
         self.viewer_splitter.addWidget(self.oracle_tabs)
@@ -276,6 +278,7 @@ class AliosWindow(QtWidgets.QWidget):
         self.refresh_runs_btn.clicked.connect(self.refresh_runs)
         self.run_selector.currentIndexChanged.connect(self.on_run_selected)
         self.dataset_selector.currentIndexChanged.connect(self.on_dataset_selected)
+        self.view_agent_entropy.cellClicked.connect(self.update_neuro_probe)
         
         # --- SYNC SLIDER AND SPINBOX ---
         self.maze_slider.valueChanged.connect(self.maze_spinbox.setValue)
@@ -499,44 +502,59 @@ class AliosWindow(QtWidgets.QWidget):
         
     def update_display(self):
         idx = self.maze_slider.value()
-        if self.current_mazes is None: return
+        if self.current_mazes is None:
+            return
         
         maze = self.current_mazes[idx]
         maze_jax_slice = self.current_mazes_jax[idx]
 
-        self.view_oracle_policy.clear_highlights()
-        self.view_oracle_values.clear_highlights()
-        self.view_agent_policy.clear_highlights()
-        self.view_agent_values.clear_highlights()
-
-        # 1. Update Oracle Tabs
+        # Reset all views
         self.view_oracle_policy.set_maze(maze)
         self.view_oracle_values.set_maze(maze)
-        
-        if self.current_vi_policies is not None and self.current_vi_values is not None:
-            self.view_oracle_policy.draw_policy_vectorized(maze, self.current_vi_policies[idx], base_color='#28A745')
-            self.view_oracle_values.set_heatmap(maze, self.current_vi_values[idx])
-
-        # 2. Update Agent Tabs
         self.view_agent_policy.set_maze(maze)
         self.view_agent_values.set_maze(maze)
-        
-        if self.current_agent_q is not None and hasattr(self, 'vector_decoder_jit'):
-            state_id_map = self.vector_decoder_jit(maze_jax_slice)
+        self.view_agent_entropy.set_maze(maze)
+
+        # --- ORACLE TAB ---
+        if self.current_vi_policies is not None and self.current_vi_values is not None:
+            self.view_oracle_policy.draw_policy_vectorized(
+                maze,
+                self.current_vi_policies[idx],
+                base_color='#28A745'
+            )
+            self.view_oracle_values.set_heatmap(maze, self.current_vi_values[idx])
+
+        # --- AGENT TAB ---
+        if self.current_agent_q is not None and callable(getattr(self, 'vector_decoder_jit', None)):
             
-            # Give the state map to both views for the Click Probe
+            state_id_map = self.vector_decoder_jit(maze_jax_slice)
+
+            # Q-vectors per state: (16, 16, 4)
+            q_vectors = self.current_agent_q[state_id_map]
+
+            # Metrics
+            agent_actions = np.argmax(q_vectors, axis=-1)
+            agent_values = np.max(q_vectors, axis=-1)
+
+            # Entropy (NEW)
+            agent_entropy = core_logic.calculate_entropy_grid(q_vectors)
+
+            # Provide state map to UI
             self.view_agent_policy.set_state_map(state_id_map)
             self.view_agent_values.set_state_map(state_id_map)
-            
-            # --- THE MATH ---
-            # Action is argmax. Value is max.
-            agent_actions = np.argmax(self.current_agent_q[state_id_map], axis=-1)
-            agent_values = np.max(self.current_agent_q[state_id_map], axis=-1)
-            
+            self.view_agent_entropy.set_state_map(state_id_map)
+
             oracle_actions = self.current_vi_policies[idx] if self.current_vi_policies is not None else None
-            
-            # Draw Policy
-            self.view_agent_policy.draw_policy_vectorized(maze, agent_actions, oracle_actions=oracle_actions)
-            
-            # Draw Heatmap
+
+            # Draw policy
+            self.view_agent_policy.draw_policy_vectorized(
+                maze,
+                agent_actions,
+                oracle_actions=oracle_actions
+            )
+
+            # Draw value heatmap
             self.view_agent_values.set_heatmap(maze, agent_values)
+
+            # Draw entropy heatmap
+            self.view_agent_entropy.set_heatmap(maze, agent_entropy)

@@ -85,6 +85,22 @@ def calculate_entropy(q_vals, temperature=1.0):
     entropy = -np.sum(probs * np.log(probs + 1e-9))
     return float(entropy)
 
+def calculate_entropy_grid(q_values_grid, temperature=1.0):
+    """
+    Calculates Shannon Entropy for every cell in a 16x16 grid.
+    q_values_grid: (16, 16, 4)
+    Returns: (16, 16) array of entropy values.
+    """
+    # 1. Softmax to get probabilities P(a|s)
+    # Subtract max for numerical stability
+    max_q = np.max(q_values_grid, axis=-1, keepdims=True)
+    exp_q = np.exp((q_values_grid - max_q) / temperature)
+    probs = exp_q / np.sum(exp_q, axis=-1, keepdims=True)
+    
+    # 2. Shannon Entropy: H = -sum(p * log(p))
+    # We add a tiny epsilon to avoid log(0)
+    entropy = -np.sum(probs * np.log(probs + 1e-9), axis=-1)
+    return entropy
 
 def calculate_conflict(state_id, state_map, oracle_policy):
     coords = np.argwhere(state_map == state_id)
