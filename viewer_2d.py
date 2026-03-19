@@ -35,6 +35,14 @@ class MazeView(pg.PlotWidget):
         self.highlight_mask.setZValue(10) # High Z-index to be on top
         self.addItem(self.highlight_mask)
 
+        # Trajectory Line (Dynamical Probe)
+        # Bright Magenta, dashed line, thick width
+        self.trajectory_line = pg.PlotCurveItem(
+            pen=pg.mkPen(color='#FF00FF', width=4, style=QtCore.Qt.DashLine)
+        )
+        self.trajectory_line.setZValue(11) # Highest Z-value so it sits on top of everything
+        self.addItem(self.trajectory_line)
+
         # Markers
         self.start_marker = QtWidgets.QGraphicsRectItem(-0.5, -0.5, 1, 1)
         self.start_marker.setBrush(QtGui.QBrush(QtGui.QColor('#0078D7'))) 
@@ -127,11 +135,26 @@ class MazeView(pg.PlotWidget):
         rgb[maze_data == 0] = [230, 230, 230]
         self.img.setImage(np.transpose(rgb, (1, 0, 2)))
         self.clear_highlights()
+        self.clear_trajectory()
         
         # Hide legend on normal maze views
         self.legend_img.setVisible(False)
         self.legend_min_txt.setVisible(False)
         self.legend_max_txt.setVisible(False)
+
+    def draw_trajectory(self, path):
+        """path: list of (r, c) tuples"""
+        if not path:
+            self.clear_trajectory()
+            return
+            
+        # PyQtGraph plots (x, y) which is (col, row)
+        x = [c for r, c in path]
+        y = [r for r, c in path]
+        self.trajectory_line.setData(x, y)
+
+    def clear_trajectory(self):
+        self.trajectory_line.setData([],[])
 
     def draw_policy_vectorized(self, maze, action_grid, oracle_actions=None, base_color='#00BFFF'):
         for r in range(16):

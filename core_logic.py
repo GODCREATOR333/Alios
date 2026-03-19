@@ -1,6 +1,10 @@
 import jax.numpy as jnp
 import jax
 from functools import partial
+import pickle
+import os
+import numpy as np
+
 
 def get_full_state_map_pomdp(maze):
     maze_with_goal = maze.at[15, 15].set(2)
@@ -20,16 +24,17 @@ def get_full_state_map_pomdp(maze):
 
     return jax.vmap(jax.vmap(get_single_state))(r_indices, c_indices)
 
+
 def get_full_state_map_mdp(maze):
     r, c = jnp.indices((16, 16))
     return (r * 16 + c).astype(jnp.int32)
 
+
 def decode_mdp(maze, r, c):
-    """Classic MDP: returns state index 0-255"""
     return int(r * 16 + c)
 
+
 def decode_pomdp_3x3_base3(maze, r, c):
-    """The 3x3 Window + Compass logic we developed"""
     maze_with_goal = jnp.array(maze).at[15, 15].set(2)
     padded = jnp.pad(maze_with_goal, 1, constant_values=1)
     window = jax.lax.dynamic_slice(padded, (r, c), (3, 3))
@@ -42,12 +47,6 @@ def decode_pomdp_3x3_base3(maze, r, c):
     compass_id = dr * 2 + dc
     return int(local_id * 4 + compass_id)
 
-# The Factory: Alios looks here to find the right logic
-DECODERS = {
-    "mdp": decode_mdp,
-    "3x3_base3_compass": decode_pomdp_3x3_base3
-}
-
 
 @partial(jax.jit, static_argnums=(2,))
 def evaluate_dataset(q_table, dataset_jax, state_map_func):
@@ -56,7 +55,6 @@ def evaluate_dataset(q_table, dataset_jax, state_map_func):
 
     def single_maze_rollout(maze, actions):
         def cond(state): 
-            # (r, c, steps, collisions, done)
             return (state[2] < 500) & (~state[4])
 
         def body(state):
@@ -67,36 +65,102 @@ def evaluate_dataset(q_table, dataset_jax, state_map_func):
             dc = jnp.array([0, 0, -1, 1])[action]
             nr, nc = r + dr, c + dc
             
-            # Physics
             hit_wall = (nr<0)|(nr>=16)|(nc<0)|(nc>=16) | (maze[jnp.clip(nr,0,15), jnp.clip(nc,0,15)]==1)
             
             fr, fc = jnp.where(hit_wall, r, nr), jnp.where(hit_wall, c, nc)
             is_goal = (fr==15)&(fc==15)
             
-            # Increment collisions if hit_wall is true
             return (fr, fc, steps + 1, collisions + jnp.where(hit_wall, 1, 0), is_goal)
 
-        # Start state: (r, c, steps, collisions, done)
         init = (0, 0, 0, 0, False)
         return jax.lax.while_loop(cond, body, init)
 
     results = jax.vmap(single_maze_rollout)(dataset_jax, all_actions)
-    # Returns: (final_r, final_c, total_steps, total_collisions, reached_goal)
     return results
 
 
+def calculate_entropy(q_vals, temperature=1.0):
+    exp_q = np.exp((q_vals - np.max(q_vals)) / temperature)
+    probs = exp_q / np.sum(exp_q)
+    entropy = -np.sum(probs * np.log(probs + 1e-9))
+    return float(entropy)
 
 
-# --- FACTORIES ---
+def calculate_conflict(state_id, state_map, oracle_policy):
+    coords = np.argwhere(state_map == state_id)
+    if len(coords) <= 1:
+        return 0.0 
+    
+    oracle_actions = [oracle_policy[r, c] for (r, c) in coords]
+    
+    most_common_count = max([oracle_actions.count(a) for a in set(oracle_actions)])
+    agreement_rate = most_common_count / len(oracle_actions)
+    
+    return (1.0 - agreement_rate) * 100
 
-# This factory is for the Evaluator (raw functions)
-STATE_MAP_FUNCS_RAW = {
-    "mdp": get_full_state_map_mdp,
-    "3x3_base3_compass": get_full_state_map_pomdp
+
+def compute_rollout(maze, start_pos, q_table, decoder_func, max_steps=512):
+    path = [start_pos]
+    r, c = start_pos
+    
+    for _ in range(max_steps):
+        state_id = decoder_func(maze, r, c)
+        action = np.argmax(q_table[state_id])
+        
+        dr = [-1, 1, 0, 0][action]
+        dc = [0, 0, -1, 1][action]
+        nr, nc = r + dr, c + dc
+        
+        if nr < 0 or nr >= 16 or nc < 0 or nc >= 16 or maze[nr, nc] == 1:
+            break
+            
+        r, c = nr, nc
+        path.append((r, c))
+        
+        if (r, c) == (15, 15):
+            break
+            
+    return path
+
+
+# -------- LEGACY -------- #
+
+def decode_legacy_9bit(maze, r, c):
+    padded = jnp.pad(maze, 1, constant_values=1)
+    window = jax.lax.dynamic_slice(padded, (r, c), (3, 3)).flatten()
+    
+    powers = jnp.array([256, 128, 64, 32, 16, 8, 4, 2, 1])
+    win_id = jnp.sum(window * powers)
+    
+    dr = jnp.sign(15 - r)
+    dc = jnp.sign(15 - c)
+    comp_id = (dr + 1) * 3 + (dc + 1)
+    
+    return (win_id * 9 + comp_id).astype(jnp.int32)
+
+
+@jax.jit
+def get_full_state_map_legacy(maze):
+    r_idx, c_idx = jnp.indices((16, 16))
+    return jax.vmap(jax.vmap(decode_legacy_9bit, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(maze, r_idx, c_idx)
+
+
+# -------- FACTORIES -------- #
+
+DECODERS = {
+    "mdp": decode_mdp,
+    "3x3_base3_compass": decode_pomdp_3x3_base3,
+    "legacy_9bit_compass": decode_legacy_9bit,
 }
 
-# This factory is for the UI Slider (Jitted for speed)
+STATE_MAP_FUNCS_RAW = {
+    "mdp": get_full_state_map_mdp,
+    "3x3_base3_compass": get_full_state_map_pomdp,
+    "legacy_9bit_compass": get_full_state_map_legacy
+}
+
 STATE_MAP_FUNCS_JIT = {
     "mdp": jax.jit(get_full_state_map_mdp),
-    "3x3_base3_compass": jax.jit(get_full_state_map_pomdp)
+    "3x3_base3_compass": jax.jit(get_full_state_map_pomdp),
+    "legacy_9bit_compass": get_full_state_map_legacy
 }

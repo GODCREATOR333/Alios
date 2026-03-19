@@ -186,6 +186,23 @@ class AliosWindow(QtWidgets.QWidget):
         inspect_layout.addWidget(self.neuro_label)
         self.sidebar_layout.addWidget(self.inspect_group)
 
+        # --- Probes Info Legend ---
+        self.probes_help = QtWidgets.QGroupBox("Probes Guide")
+        help_layout = QtWidgets.QVBoxLayout(self.probes_help)
+        self.probes_help.setStyleSheet("QGroupBox { color: #FFD700; }") # Gold title
+        
+        help_text = QtWidgets.QLabel(
+            "<b>• CLICK:</b> Run Micro-Probe on cell.<br>"
+            "<b>• YELLOW BOX:</b> Aliased states (Confusion).<br>"
+            "<b>• CONFLICT:</b> Mathematical solvability.<br>"
+            "<b>• ENTROPY:</b> Policy uncertainty (Ties).<br>"
+            "<b>• PATH:</b> Visualizes Limit Cycles (Loops)."
+        )
+        help_text.setStyleSheet("font-size: 9pt; color: #BBB;")
+        help_layout.addWidget(help_text)
+        self.sidebar_layout.addWidget(self.probes_help)
+
+
         # --- Config/Metadata Inspector ---
         self.config_group = QtWidgets.QGroupBox("Run Configuration (JSON)")
         config_layout = QtWidgets.QVBoxLayout(self.config_group)
@@ -320,7 +337,16 @@ class AliosWindow(QtWidgets.QWidget):
         details = db_manager.get_run_details(run_id)
         if details:
             repr_key = details['state_repr']
+            # Use .get(key, default) to prevent NoneType crashes!
+            self.current_decoder = core_logic.DECODERS.get(
+                repr_key, core_logic.decode_mdp
+            )
             
+            self.vector_decoder_jit = core_logic.STATE_MAP_FUNCS_JIT.get(
+                repr_key, core_logic.get_full_state_map_mdp
+            )
+
+    
             # --- THE FIX: Create both versions ---
             # JIT version is for the slider (buttery smooth)
             self.vector_decoder_jit = core_logic.STATE_MAP_FUNCS_JIT.get(repr_key)
@@ -423,14 +449,27 @@ class AliosWindow(QtWidgets.QWidget):
 
 
     def update_neuro_probe(self, r, c, state_id, aliased_count):
-        """Updates the text readout when a cell is clicked."""
         if self.current_agent_q is not None:
             q_vals = self.current_agent_q[state_id]
             
-            # Format the exact numbers cleanly
+            # 1. Calculate Entropy (Confusion)
+            entropy = core_logic.calculate_entropy(q_vals)
+            
+            # 2. Calculate Conflict (Fatal vs Benign Aliasing)
+            # We need the current state_map and oracle_policy
+            idx = self.maze_slider.value()
+            state_map = self.vector_decoder_jit(self.current_mazes_jax[idx])
+            oracle_p = self.current_vi_policies[idx]
+            
+            conflict = core_logic.calculate_conflict(state_id, state_map, oracle_p)
+            
+            # 3. Build the Rich Text Readout
+            color_id = "#FFD700" # Gold
             text = (
-                f"<b style='color: #FFD700;'>State ID:</b> {state_id}<br>"
-                f"<b style='color: #FFD700;'>Aliased Locations:</b> {aliased_count}<br>"
+                f"<b style='color:{color_id};'>State ID:</b> {state_id}<br>"
+                f"<b style='color:{color_id};'>Aliased:</b> {aliased_count} locations<br>"
+                f"<b style='color:{color_id};'>Conflict:</b> {conflict:.1f}%<br>"
+                f"<b style='color:{color_id};'>Entropy:</b> {entropy:.3f}<br>"
                 f"<hr style='border: 1px solid #444;'>"
                 f"<b>[↑] Up   :</b> {q_vals[0]:>8.2f}<br>"
                 f"<b>[↓] Down :</b> {q_vals[1]:>8.2f}<br>"
@@ -440,6 +479,22 @@ class AliosWindow(QtWidgets.QWidget):
             
             self.neuro_label.setText(text)
             self.inspect_group.setTitle(f"Neuro-Probe: ({r}, {c})")
+
+            # --- NEW: Compute and Draw Trajectory ---
+            idx = self.maze_slider.value()
+            maze = self.current_mazes[idx]
+            
+            # Compute path using the scalar decoder
+            path = core_logic.compute_rollout(
+                maze, 
+                (r, c), 
+                self.current_agent_q, 
+                self.current_decoder
+            )
+            
+            # Draw the line on both Agent tabs
+            self.view_agent_policy.draw_trajectory(path)
+            self.view_agent_values.draw_trajectory(path)
 
         
     def update_display(self):
