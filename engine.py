@@ -1,6 +1,7 @@
 import os
 import json
 import numpy as np
+import jax.numpy as jnp
 import pyqtgraph as pg
 from PyQt5 import QtWidgets, QtCore, QtGui
 
@@ -60,14 +61,86 @@ class AliosWindow(QtWidgets.QWidget):
         data_layout.addWidget(self.dataset_selector)
         self.sidebar_layout.addWidget(self.data_group)
 
-        # --- Maze Navigation (Slider) ---
+# --- Maze Navigation (Slider + Number Box) ---
         self.maze_group = QtWidgets.QGroupBox("Maze Navigator")
-        maze_layout = QtWidgets.QVBoxLayout(self.maze_group)
-        self.maze_label = QtWidgets.QLabel("Maze Index: 0")
+        maze_nav_layout = QtWidgets.QVBoxLayout(self.maze_group)
+        
+        top_nav_layout = QtWidgets.QHBoxLayout()
+        self.maze_label = QtWidgets.QLabel("Maze Index:")
+        
+        self.maze_spinbox = QtWidgets.QSpinBox()
+        self.maze_spinbox.setRange(0, 999)
+        self.maze_spinbox.setFixedWidth(60)
+        
+        # --- THE FIX: Hide the black up/down UI arrows ---
+        self.maze_spinbox.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self.maze_spinbox.setAlignment(QtCore.Qt.AlignCenter) # Center the number
+                    
+        top_nav_layout.addWidget(self.maze_label)
+        top_nav_layout.addSpacing(5)
+        top_nav_layout.addWidget(self.maze_spinbox)
+        top_nav_layout.addStretch()
+        
         self.maze_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.maze_slider.setRange(0, 999)
-        maze_layout.addWidget(self.maze_label)
-        maze_layout.addWidget(self.maze_slider)
+        self.maze_spinbox.setStyleSheet("""
+                QSpinBox {
+                    padding: 4px;
+                    border-radius: 6px;
+                    border: 1px solid #444;
+                    background-color: #1e1e1e;
+                    color: #ddd;
+                }
+            """)
+        
+        self.maze_slider.setStyleSheet("""
+                QSlider::groove:horizontal {
+                    height: 6px;
+                    background: #2a2a2a;
+                    border-radius: 3px;
+                }
+
+                QSlider::handle:horizontal {
+                    background: #00BFFF;
+                    width: 14px;
+                    height: 14px;
+                    margin: -5px 0;
+                    border-radius: 7px;
+                }
+
+                QSlider::sub-page:horizontal {
+                    background: #00BFFF;
+                    border-radius: 3px;
+                }
+            """)
+        
+        self.maze_group.setStyleSheet("""
+                QGroupBox {
+                    font-weight: bold;
+                    border: 1px solid #333;
+                    border-radius: 8px;
+                    margin-top: 10px;
+                    padding: 8px;
+                }
+
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 3px;
+                }
+            """)
+        
+        self.maze_slider.setToolTip("Scroll through maze samples")
+        self.maze_spinbox.setToolTip("Enter maze index")
+        maze_nav_layout.setContentsMargins(10, 12, 10, 12)
+        maze_nav_layout.setSpacing(10)
+        top_nav_layout.setSpacing(8)
+
+        # Use setTracking(False) if you want it to ONLY update when you release the mouse, 
+        # but we'll keep it True and optimize the loop instead.
+        
+        maze_nav_layout.addLayout(top_nav_layout)
+        maze_nav_layout.addWidget(self.maze_slider)
         self.sidebar_layout.addWidget(self.maze_group)
 
         # --- Config/Metadata Inspector ---
@@ -92,7 +165,7 @@ class AliosWindow(QtWidgets.QWidget):
         self.viewer_widget = QtWidgets.QWidget()
         self.viewer_layout = QtWidgets.QHBoxLayout(self.viewer_widget)
         
-        self.view_oracle = MazeView(title="Value Iteration (Oracle)")
+        self.view_oracle = MazeView(title="Value Iteration (Optimal Policy)")
         self.view_agent = MazeView(title="Agent Policy (Hypothesis)")
         
         self.viewer_layout.addWidget(self.view_oracle)
@@ -109,7 +182,22 @@ class AliosWindow(QtWidgets.QWidget):
         self.refresh_runs_btn.clicked.connect(self.refresh_runs)
         self.run_selector.currentIndexChanged.connect(self.on_run_selected)
         self.dataset_selector.currentIndexChanged.connect(self.on_dataset_selected)
-        self.maze_slider.valueChanged.connect(self.on_maze_slider_moved)
+        
+        # --- SYNC SLIDER AND SPINBOX ---
+        self.maze_slider.valueChanged.connect(self.maze_spinbox.setValue)
+        self.maze_spinbox.valueChanged.connect(self.maze_slider.setValue)
+        
+        # Both trigger the display update via the slider
+        self.maze_slider.valueChanged.connect(self.update_display)
+    
+    def keyPressEvent(self, event):
+        """Allows global keyboard arrow keys to scrub through mazes."""
+        if event.key() == QtCore.Qt.Key_Up or event.key() == QtCore.Qt.Key_Right:
+            self.maze_slider.setValue(self.maze_slider.value() + 1)
+        elif event.key() == QtCore.Qt.Key_Down or event.key() == QtCore.Qt.Key_Left:
+            self.maze_slider.setValue(self.maze_slider.value() - 1)
+        else:
+            super().keyPressEvent(event)
 
     # ============================
     # DATA & LOGIC METHODS
@@ -124,60 +212,57 @@ class AliosWindow(QtWidgets.QWidget):
         self.run_selector.blockSignals(False)
 
     def scan_datasets(self):
-        """Lists all .npy maze files in data_jax/."""
+        """Lists all .npy maze files and picks the first one."""
         self.dataset_selector.blockSignals(True)
         path = "data_jax"
         if os.path.exists(path):
-            files = [f for f in os.listdir(path) if f.endswith('.npy')]
-            self.dataset_selector.addItems(sorted(files))
+            files = sorted([f for f in os.listdir(path) if f.endswith('.npy')])
+            self.dataset_selector.addItems(files)
         self.dataset_selector.blockSignals(False)
+        
+        # Manually trigger the first load
+        if self.dataset_selector.count() > 0:
+            self.dataset_selector.setCurrentIndex(0)
+            self.on_dataset_selected()
+
 
     def on_run_selected(self):
-        """Triggered when a user picks a different training run."""
+        """Handles run selection and updates the UI state."""
         run_id = self.run_selector.currentText()
         if not run_id: return
         
         details = db_manager.get_run_details(run_id)
         if details:
-            # 1. Store state-representation and decoder function
+            # Setup decoders
             repr_key = details['state_repr']
             self.current_decoder = core_logic.DECODERS.get(repr_key, core_logic.decode_mdp)
+            self.current_vector_decoder = core_logic.STATE_MAP_FUNCS.get(repr_key, core_logic.get_full_state_map_mdp)
             
-            # 2. Update metadata display
+            # Update display
             self.config_display.setText(json.dumps(details['config'], indent=4))
-            
-            # 3. Load the actual Q-table/Policy array
-            if os.path.exists(details['path']):
-                self.current_agent_q = np.load(details['path'])
-                print(f"Loaded Agent Policy: {run_id} (Shape: {self.current_agent_q.shape})")
-            
+            self.current_agent_q = np.load(details['path'])
             self.update_display()
 
     def on_dataset_selected(self):
+        """Loads dataset and pre-converts to JAX to prevent slider lag."""
         ds_name = self.dataset_selector.currentText()
         if not ds_name: return
         
-        # 1. Load the raw maze data
-        ds_path = os.path.join("data_jax", ds_name)
-        self.current_mazes = np.load(ds_path)
+        # 1. Load raw mazes AND pre-convert the whole block to JAX once
+        self.current_mazes = np.load(os.path.join("data_jax", ds_name))
+        self.current_mazes_jax = jnp.array(self.current_mazes) # Lag killer!
         
-        # 2. Load the Oracle (.npz) baseline
-        # Updated naming logic: .npy -> _VI_solved.npz
+        # 2. Load Oracle
         vi_filename = ds_name.replace(".npy", "_VI_solved.npz")
         vi_path = os.path.join("data_jax", "value_iteration", vi_filename)
         
         if os.path.exists(vi_path):
-            # Load the .npz dictionary
             with np.load(vi_path) as data:
-                # We extract the policy and values into our "backpack"
-                self.current_vi_policies = data['policy'] # Shape: (1000, 16, 16)
-                self.current_vi_values = data['values']   # Shape: (1000, 16, 16)
-            print(f"Loaded Oracle .npz: {vi_filename}")
+                self.current_vi_policies = data['policy']
+            print(f"Loaded Oracle: {vi_filename}")
         else:
             self.current_vi_policies = None
-            self.current_vi_values = None
-            print(f"Warning: No VI baseline found at {vi_path}")
-            
+
         self.update_display()
 
     def on_maze_slider_moved(self):
@@ -187,21 +272,26 @@ class AliosWindow(QtWidgets.QWidget):
         self.update_display()
 
     def update_display(self):
+        """Redraws everything using the pre-converted JAX arrays."""
         idx = self.maze_slider.value()
         if self.current_mazes is None: return
         
+        # Use the pre-converted JAX slice (extremely fast)
         maze = self.current_mazes[idx]
-        
-        # 1. Update Oracle View
+        maze_jax_slice = self.current_mazes_jax[idx]
+
+        # 1. Update Oracle
         self.view_oracle.set_maze(maze)
         if self.current_vi_policies is not None:
-            oracle_2d = self.current_vi_policies[idx]
-            # Use base_color='#28A745' (Nice Green) for the Oracle
-            self.view_oracle.draw_policy(maze, oracle_2d, core_logic.decode_mdp, base_color='#28A745')
+            oracle_actions = self.current_vi_policies[idx]
+            self.view_oracle.draw_policy_vectorized(maze, oracle_actions, base_color='#28A745')
 
-        # 2. Update Agent View
+        # 2. Update Agent
         self.view_agent.set_maze(maze)
-        if self.current_agent_q is not None and self.current_decoder is not None:
-            oracle_2d = self.current_vi_policies[idx] if self.current_vi_policies is not None else None
-            # Blue for normal, Red for divergence (handled automatically)
-            self.view_agent.draw_policy(maze, self.current_agent_q, self.current_decoder, oracle_policy=oracle_2d)
+        if self.current_agent_q is not None and hasattr(self, 'current_vector_decoder'):
+            # This logic now runs on pre-allocated JAX memory
+            state_id_map = self.current_vector_decoder(maze_jax_slice)
+            agent_actions = np.argmax(self.current_agent_q[state_id_map], axis=-1)
+            
+            oracle_actions = self.current_vi_policies[idx] if self.current_vi_policies is not None else None
+            self.view_agent.draw_policy_vectorized(maze, agent_actions, oracle_actions=oracle_actions)
