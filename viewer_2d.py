@@ -67,6 +67,21 @@ class MazeView(pg.PlotWidget):
 
         self.scene().sigMouseClicked.connect(self.on_mouse_click)
 
+        # --- NEW: Heatmap Legend ---
+
+        self.legend_img = pg.ImageItem()
+        self.addItem(self.legend_img)
+        self.legend_img.setVisible(False)
+
+        self.legend_min_txt = pg.TextItem("", color='w', anchor=(0, 0.5))
+        self.legend_min_txt.setPos(-1, 16.45)
+        self.addItem(self.legend_min_txt)
+
+        self.legend_max_txt = pg.TextItem("0 (Goal)", color='w', anchor=(1, 0.5))
+        self.legend_max_txt.setPos(16.5, 16.45)
+        self.addItem(self.legend_max_txt)
+
+
         # Draw Grid Lines
         grid_pen = pg.mkPen(color='#333333', width=1)
         for i in range(17):
@@ -105,15 +120,18 @@ class MazeView(pg.PlotWidget):
 
 
     def set_maze(self, maze_data):
-        self.maze_data = maze_data # Store for wall-check logic
+        self.maze_data = maze_data
         h, w = maze_data.shape
         rgb = np.zeros((h, w, 3), dtype=np.uint8)
         rgb[maze_data == 1] = [30, 30, 30]
         rgb[maze_data == 0] = [230, 230, 230]
         self.img.setImage(np.transpose(rgb, (1, 0, 2)))
-        
-        # Clear highlights when maze changes
         self.clear_highlights()
+        
+        # Hide legend on normal maze views
+        self.legend_img.setVisible(False)
+        self.legend_min_txt.setVisible(False)
+        self.legend_max_txt.setVisible(False)
 
     def draw_policy_vectorized(self, maze, action_grid, oracle_actions=None, base_color='#00BFFF'):
         for r in range(16):
@@ -191,3 +209,66 @@ class MazeView(pg.PlotWidget):
         # Update Title
         self.setTitle(f"{self.default_title} | <span style='color: #FFD700;'>State ID: {state_id} ({len(aliased_coords)} locations)</span>")
         return len(aliased_coords)
+    
+
+    def set_heatmap(self, maze_data, value_data):
+        self.clear_highlights()
+        v = np.array(value_data)
+        
+        # --- THE BUG FIX: Mask out -inf values so they don't break the math! ---
+        is_finite = np.isfinite(v)
+        valid_mask = (maze_data == 0) & is_finite
+        
+        if not np.any(valid_mask): return
+        
+        v_min = np.min(v[valid_mask])
+        v_max = np.max(v[valid_mask])
+        
+        if v_max == v_min:
+            v_max = v_min + 1e-6 
+
+        v_norm = (v - v_min) / (v_max - v_min + 1e-6)
+        v_norm = np.clip(v_norm, 0, 1)
+
+        # Get Viridis Colormap
+        lut = pg.colormap.get('viridis').getLookupTable(0.0, 1.0, 256)
+        
+        v_indices = (v_norm * 255).astype(np.uint8)
+        rgb_data = lut[v_indices] 
+
+        rgb_data[maze_data == 1] = [18, 18, 18] 
+        
+        # --- NEW: Color Unreachable paths Dark Red ---
+        rgb_data[(maze_data == 0) & ~is_finite] = [80, 0, 0] 
+
+        self.img.setImage(np.transpose(rgb_data, (1, 0, 2)))
+        
+        # Hide arrows
+        for r in range(16):
+            for c in range(16):
+                self.arrow_pool[r][c].setText("")
+
+        # --- DRAW HORIZONTAL LEGEND ---
+        grad_indices = np.arange(256, dtype=np.uint8)
+        grad_rgb = lut[grad_indices]
+        grad_img = np.tile(grad_rgb[:, np.newaxis, :], (1, 4, 1))
+
+        self.legend_img.setImage(grad_img)
+
+        maze_width = maze_data.shape[1]
+        legend_ratio = 0.7
+        legend_width = maze_width * legend_ratio
+        x_start = (maze_width - legend_width) / 2
+
+        self.legend_img.setRect(x_start, 16.25, legend_width, 0.4)
+
+        self.legend_img.setImage(grad_img)
+        self.legend_min_txt.setText(f"Low: {v_min:.0f}")
+        self.legend_max_txt.setText(f"High: {v_max:.0f}")
+
+        self.legend_min_txt.setPos(x_start, 17)
+        self.legend_max_txt.setPos(x_start + legend_width, 17)
+
+        self.legend_img.setVisible(True)
+        self.legend_min_txt.setVisible(True)
+        self.legend_max_txt.setVisible(True)

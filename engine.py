@@ -24,6 +24,7 @@ class AliosWindow(QtWidgets.QWidget):
         self.current_agent_q = None        # The Loaded Q-table/Policy
         self.current_decoder = None        # Function to map (r,c) -> State ID
         self.current_config = None         # JSON metadata for the run
+        self.current_vi_values = None
 
         # --- 3. Initialize UI & Connections ---
         self.init_ui()
@@ -61,7 +62,7 @@ class AliosWindow(QtWidgets.QWidget):
         data_layout.addWidget(self.dataset_selector)
         self.sidebar_layout.addWidget(self.data_group)
 
-# --- Maze Navigation (Slider + Number Box) ---
+        # --- Maze Navigation (Slider + Number Box) ---
         self.maze_group = QtWidgets.QGroupBox("Maze Navigator")
         maze_nav_layout = QtWidgets.QVBoxLayout(self.maze_group)
         
@@ -206,18 +207,52 @@ class AliosWindow(QtWidgets.QWidget):
         # ============================
         self.viewer_widget = QtWidgets.QWidget()
         self.viewer_layout = QtWidgets.QHBoxLayout(self.viewer_widget)
-        
-        self.view_oracle = MazeView(title="Value Iteration (Optimal Policy)")
-        self.view_agent = MazeView(title="Agent Policy (Hypothesis)")
-        
-        self.viewer_layout.addWidget(self.view_oracle)
-        self.viewer_layout.addWidget(self.view_agent)
+        self.viewer_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
 
-        # Assemble Splitter
+        # --- NEW: Oracle Tab Container ---
+        self.oracle_tabs = QtWidgets.QTabWidget()
+        self.oracle_tabs.setStyleSheet("""
+            QTabWidget::pane { border: 1px solid #333; top: -1px; background: #121212; }
+            QTabBar::tab { background: #2a2a2a; color: #aaa; padding: 8px 20px; border-top-left-radius: 4px; border-top-right-radius: 4px; }
+            QTabBar::tab:selected { background: #121212; color: #00BFFF; border: 1px solid #333; border-bottom: none; }
+        """)
+
+        # Tab 1: Policy View (Reuse your MazeView)
+        self.view_oracle_policy = MazeView(title="VI: Optimal Policy")
+        
+        # Tab 2: Value View (Heatmap)
+        self.view_oracle_values = MazeView(title="VI: State Values (V*)")
+        
+        self.oracle_tabs.addTab(self.view_oracle_policy, "Policy (π*)")
+        self.oracle_tabs.addTab(self.view_oracle_values, "Value Heatmap (V*)")
+
+        # --- NEW: Agent Tab Container ---
+        self.agent_tabs = QtWidgets.QTabWidget()
+        self.agent_tabs.setStyleSheet(self.oracle_tabs.styleSheet()) # Reuse the exact same CSS!
+
+        self.view_agent_policy = MazeView(title="Agent: Learned Policy")
+        self.view_agent_values = MazeView(title="Agent: Perceived Values (max Q)")
+        
+        self.agent_tabs.addTab(self.view_agent_policy, "Policy (π)")
+        self.agent_tabs.addTab(self.view_agent_values, "Value Heatmap (max Q)")
+        
+        # Add both Tab Containers to the Splitter
+        self.viewer_splitter.addWidget(self.oracle_tabs)
+        self.viewer_splitter.addWidget(self.agent_tabs)
+        self.viewer_splitter.setSizes([800, 800])
+
+        self.viewer_layout.addWidget(self.viewer_splitter)
+
+        # Assemble Main Splitter
         self.splitter.addWidget(self.sidebar)
         self.splitter.addWidget(self.viewer_widget)
         self.splitter.setSizes([300, 1100])
         self.main_layout.addWidget(self.splitter)
+
+
+        # Agent View (Stays the same)
+        self.view_agent = MazeView(title="Agent Policy (Hypothesis)")
+
 
     def connect_signals(self):
         """Connects UI elements to logic methods."""
@@ -237,6 +272,9 @@ class AliosWindow(QtWidgets.QWidget):
 
         # Connect Neuro-Probe
         self.view_agent.cellClicked.connect(self.update_neuro_probe)
+        # Connect Neuro-Probe to BOTH Agent views so you can click the heatmap too!
+        self.view_agent_policy.cellClicked.connect(self.update_neuro_probe)
+        self.view_agent_values.cellClicked.connect(self.update_neuro_probe)
     
     def keyPressEvent(self, event):
         """Allows global keyboard arrow keys to scrub through mazes."""
@@ -296,24 +334,25 @@ class AliosWindow(QtWidgets.QWidget):
             self.update_display()
 
     def on_dataset_selected(self):
-        """Loads dataset and pre-converts to JAX to prevent slider lag."""
         ds_name = self.dataset_selector.currentText()
         if not ds_name: return
         
-        # 1. Load raw mazes AND pre-convert the whole block to JAX once
+        # 1. Load raw mazes
         self.current_mazes = np.load(os.path.join("data_jax", ds_name))
-        self.current_mazes_jax = jnp.array(self.current_mazes) # Lag killer!
+        self.current_mazes_jax = jnp.array(self.current_mazes)
         
-        # 2. Load Oracle
+        # 2. Load Oracle .npz
         vi_filename = ds_name.replace(".npy", "_VI_solved.npz")
         vi_path = os.path.join("data_jax", "value_iteration", vi_filename)
         
         if os.path.exists(vi_path):
             with np.load(vi_path) as data:
                 self.current_vi_policies = data['policy']
+                self.current_vi_values = data['values'] # <--- ADD THIS LINE
             print(f"Loaded Oracle: {vi_filename}")
         else:
             self.current_vi_policies = None
+            self.current_vi_values = None # <--- ADD THIS LINE
 
         self.update_display()
 
@@ -404,34 +443,45 @@ class AliosWindow(QtWidgets.QWidget):
 
         
     def update_display(self):
-        """Redraws everything using the pre-converted JAX arrays."""
         idx = self.maze_slider.value()
         if self.current_mazes is None: return
         
         maze = self.current_mazes[idx]
         maze_jax_slice = self.current_mazes_jax[idx]
 
-        self.view_oracle.clear_highlights()
-        self.view_agent.clear_highlights()
+        self.view_oracle_policy.clear_highlights()
+        self.view_oracle_values.clear_highlights()
+        self.view_agent_policy.clear_highlights()
+        self.view_agent_values.clear_highlights()
 
-        # 1. Update Oracle
-        self.view_oracle.set_maze(maze)
-        if self.current_vi_policies is not None:
-            oracle_actions = self.current_vi_policies[idx]
-            self.view_oracle.draw_policy_vectorized(maze, oracle_actions, base_color='#28A745')
+        # 1. Update Oracle Tabs
+        self.view_oracle_policy.set_maze(maze)
+        self.view_oracle_values.set_maze(maze)
+        
+        if self.current_vi_policies is not None and self.current_vi_values is not None:
+            self.view_oracle_policy.draw_policy_vectorized(maze, self.current_vi_policies[idx], base_color='#28A745')
+            self.view_oracle_values.set_heatmap(maze, self.current_vi_values[idx])
 
-        # 2. Update Agent
-        self.view_agent.set_maze(maze)
-        # FIX: Check for the new variable name 'vector_decoder_jit'
+        # 2. Update Agent Tabs
+        self.view_agent_policy.set_maze(maze)
+        self.view_agent_values.set_maze(maze)
+        
         if self.current_agent_q is not None and hasattr(self, 'vector_decoder_jit'):
-            # Calculate State Map using JIT function
             state_id_map = self.vector_decoder_jit(maze_jax_slice)
             
-            # Feed state map to the Probe (for the click-to-highlight feature)
-            self.view_agent.set_state_map(state_id_map)
+            # Give the state map to both views for the Click Probe
+            self.view_agent_policy.set_state_map(state_id_map)
+            self.view_agent_values.set_state_map(state_id_map)
             
-            # Calculate Actions
+            # --- THE MATH ---
+            # Action is argmax. Value is max.
             agent_actions = np.argmax(self.current_agent_q[state_id_map], axis=-1)
+            agent_values = np.max(self.current_agent_q[state_id_map], axis=-1)
             
             oracle_actions = self.current_vi_policies[idx] if self.current_vi_policies is not None else None
-            self.view_agent.draw_policy_vectorized(maze, agent_actions, oracle_actions=oracle_actions)
+            
+            # Draw Policy
+            self.view_agent_policy.draw_policy_vectorized(maze, agent_actions, oracle_actions=oracle_actions)
+            
+            # Draw Heatmap
+            self.view_agent_values.set_heatmap(maze, agent_values)
