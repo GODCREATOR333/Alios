@@ -1,25 +1,13 @@
 import jax.numpy as jnp
 import jax
+from functools import partial
 
-import jax.numpy as jnp
-import jax
-
-@jax.jit
 def get_full_state_map_pomdp(maze):
-    """Calculates all 256 state IDs for a maze in one JAX call."""
-    # 1. Goal Injection & Padding
     maze_with_goal = maze.at[15, 15].set(2)
     padded = jnp.pad(maze_with_goal, 1, constant_values=1)
+    r_indices, c_indices = jnp.indices((16, 16))
     
-    # 2. Use JAX 'vmap' or sliding window to get all 3x3 windows at once
-    # We'll use a trick with jax.lax.conv to get the local IDs efficiently
-    # but for now, we'll keep it simple with a 2D window extraction
-    
-    # Get indices for all 256 cells
-    r, c = jnp.indices((16, 16))
-    
-    
-    def single_state(ri, ci):
+    def get_single_state(ri, ci):
         window = jax.lax.dynamic_slice(padded, (ri, ci), (3, 3))
         flat = window.flatten()
         neighbors = jnp.concatenate([flat[:4], flat[5:]])
@@ -30,20 +18,11 @@ def get_full_state_map_pomdp(maze):
         compass_id = dr * 2 + dc
         return (local_id * 4 + compass_id).astype(jnp.int32)
 
-    # Vectorize the function over the grid
-    return jax.vmap(jax.vmap(single_state))(r, c)
+    return jax.vmap(jax.vmap(get_single_state))(r_indices, c_indices)
 
-@jax.jit
 def get_full_state_map_mdp(maze):
     r, c = jnp.indices((16, 16))
-    return r * 16 + c
-
-# Factory
-STATE_MAP_FUNCS = {
-    "mdp": get_full_state_map_mdp,
-    "3x3_base3_compass": get_full_state_map_pomdp
-}
-
+    return (r * 16 + c).astype(jnp.int32)
 
 def decode_mdp(maze, r, c):
     """Classic MDP: returns state index 0-255"""
@@ -67,4 +46,49 @@ def decode_pomdp_3x3_base3(maze, r, c):
 DECODERS = {
     "mdp": decode_mdp,
     "3x3_base3_compass": decode_pomdp_3x3_base3
+}
+
+# --- THE EVALUATOR ---
+# static_argnums=2 tells JAX that the 3rd argument (index 2: state_map_func) 
+# is a constant function, not a data array.
+@partial(jax.jit, static_argnums=(2,))
+def evaluate_dataset(q_table, dataset_jax, state_map_func):
+    # 1. Map all 1000 mazes to state IDs in parallel
+    all_state_maps = jax.vmap(state_map_func)(dataset_jax)
+    
+    # 2. Get optimal actions
+    all_actions = jnp.argmax(q_table[all_state_maps], axis=-1)
+
+    def single_maze_rollout(maze, actions):
+        def cond(state): return (state[2] < 500) & (~state[3])
+        def body(state):
+            r, c, steps, done = state
+            action = actions[r, c]
+            dr = jnp.array([-1, 1, 0, 0])[action]
+            dc = jnp.array([0, 0, -1, 1])[action]
+            nr, nc = r + dr, c + dc
+            invalid = (nr<0)|(nr>=16)|(nc<0)|(nc>=16) | (maze[jnp.clip(nr,0,15), jnp.clip(nc,0,15)]==1)
+            fr, fc = jnp.where(invalid, r, nr), jnp.where(invalid, c, nc)
+            is_goal = (fr==15)&(fc==15)
+            return (fr, fc, steps + 1, is_goal)
+
+        return jax.lax.while_loop(cond, body, (0, 0, 0, False))
+
+    return jax.vmap(single_maze_rollout)(dataset_jax, all_actions)
+
+
+
+
+# --- FACTORIES ---
+
+# This factory is for the Evaluator (raw functions)
+STATE_MAP_FUNCS_RAW = {
+    "mdp": get_full_state_map_mdp,
+    "3x3_base3_compass": get_full_state_map_pomdp
+}
+
+# This factory is for the UI Slider (Jitted for speed)
+STATE_MAP_FUNCS_JIT = {
+    "mdp": jax.jit(get_full_state_map_mdp),
+    "3x3_base3_compass": jax.jit(get_full_state_map_pomdp)
 }

@@ -143,6 +143,40 @@ class AliosWindow(QtWidgets.QWidget):
         maze_nav_layout.addWidget(self.maze_slider)
         self.sidebar_layout.addWidget(self.maze_group)
 
+
+        # --- Stats Group ---
+        self.stats_group = QtWidgets.QGroupBox("Statistical Performance")
+        stats_layout = QtWidgets.QVBoxLayout(self.stats_group)
+        
+        self.run_test_btn = QtWidgets.QPushButton("Run Batch Test (1000 Mazes)")
+        self.run_test_btn.setStyleSheet("background-color: #28A745; color: white; font-weight: bold;")
+        
+        self.stats_display = QtWidgets.QLabel("Success Rate: --\nAvg Steps: --")
+        self.stats_display.setStyleSheet("font-family: monospace; color: #00FF00;")
+        
+        stats_layout.addWidget(self.run_test_btn)
+        stats_layout.addWidget(self.stats_display)
+        self.sidebar_layout.insertWidget(2, self.stats_group) # Insert near top
+
+        # --- Micro-Inspector (Neuro-Probe) ---
+        self.inspect_group = QtWidgets.QGroupBox("Neuro-Probe: Q-Values")
+        inspect_layout = QtWidgets.QVBoxLayout(self.inspect_group)
+        
+        # Replace PlotWidget with a rich-text QLabel
+        self.neuro_label = QtWidgets.QLabel("Click on any cell in the Agent View to probe its internal state.")
+        self.neuro_label.setStyleSheet("""
+            font-family: 'Courier New', monospace; 
+            font-size: 11pt; 
+            color: #00BFFF;
+            background-color: #1e1e1e;
+            padding: 10px;
+            border-radius: 5px;
+        """)
+        self.neuro_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        
+        inspect_layout.addWidget(self.neuro_label)
+        self.sidebar_layout.addWidget(self.inspect_group)
+
         # --- Config/Metadata Inspector ---
         self.config_group = QtWidgets.QGroupBox("Run Configuration (JSON)")
         config_layout = QtWidgets.QVBoxLayout(self.config_group)
@@ -189,6 +223,12 @@ class AliosWindow(QtWidgets.QWidget):
         
         # Both trigger the display update via the slider
         self.maze_slider.valueChanged.connect(self.update_display)
+
+        # Run Batch Test
+        self.run_test_btn.clicked.connect(self.run_batch_test)
+
+        # Connect Neuro-Probe
+        self.view_agent.cellClicked.connect(self.update_neuro_probe)
     
     def keyPressEvent(self, event):
         """Allows global keyboard arrow keys to scrub through mazes."""
@@ -227,20 +267,24 @@ class AliosWindow(QtWidgets.QWidget):
 
 
     def on_run_selected(self):
-        """Handles run selection and updates the UI state."""
+        """Triggered when a user picks a different training run."""
         run_id = self.run_selector.currentText()
         if not run_id: return
         
         details = db_manager.get_run_details(run_id)
         if details:
-            # Setup decoders
             repr_key = details['state_repr']
-            self.current_decoder = core_logic.DECODERS.get(repr_key, core_logic.decode_mdp)
-            self.current_vector_decoder = core_logic.STATE_MAP_FUNCS.get(repr_key, core_logic.get_full_state_map_mdp)
+            
+            # --- THE FIX: Create both versions ---
+            # JIT version is for the slider (buttery smooth)
+            self.vector_decoder_jit = core_logic.STATE_MAP_FUNCS_JIT.get(repr_key)
+            # RAW version is for the Batch Evaluator (prevents JAX crash)
+            self.vector_decoder_raw = core_logic.STATE_MAP_FUNCS_RAW.get(repr_key)
             
             # Update display
             self.config_display.setText(json.dumps(details['config'], indent=4))
-            self.current_agent_q = np.load(details['path'])
+            self.current_agent_q = jnp.array(np.load(details['path'])) # Ensure Q is JAX array
+            
             self.update_display()
 
     def on_dataset_selected(self):
@@ -271,14 +315,64 @@ class AliosWindow(QtWidgets.QWidget):
         self.maze_label.setText(f"Maze Index: {idx}")
         self.update_display()
 
+
+    def run_batch_test(self):
+        if self.current_agent_q is None or self.current_mazes_jax is None:
+            return
+            
+        self.run_test_btn.setText("Testing...")
+        QtWidgets.QApplication.processEvents()
+        
+        # FIX: Pass the RAW version to evaluate_dataset
+        res = core_logic.evaluate_dataset(
+            self.current_agent_q, 
+            self.current_mazes_jax, 
+            self.vector_decoder_raw
+        )
+        
+        reached_goal = np.array(res[3])
+        steps = np.array(res[2])
+        
+        success_rate = (np.sum(reached_goal) / len(reached_goal)) * 100
+        avg_steps = np.mean(steps[reached_goal == True]) if np.any(reached_goal) else 0
+        
+        self.stats_display.setText(
+            f"Success Rate: {success_rate:.1f}%\n"
+            f"Avg Path:     {avg_steps:.1f} steps"
+        )
+        self.run_test_btn.setText("Run Batch Test (1000 Mazes)")
+
+
+    def update_neuro_probe(self, r, c, state_id, aliased_count):
+        """Updates the text readout when a cell is clicked."""
+        if self.current_agent_q is not None:
+            q_vals = self.current_agent_q[state_id]
+            
+            # Format the exact numbers cleanly
+            text = (
+                f"<b style='color: #FFD700;'>State ID:</b> {state_id}<br>"
+                f"<b style='color: #FFD700;'>Aliased Locations:</b> {aliased_count}<br>"
+                f"<hr style='border: 1px solid #444;'>"
+                f"<b>[↑] Up   :</b> {q_vals[0]:>8.2f}<br>"
+                f"<b>[↓] Down :</b> {q_vals[1]:>8.2f}<br>"
+                f"<b>[←] Left :</b> {q_vals[2]:>8.2f}<br>"
+                f"<b>[→] Right:</b> {q_vals[3]:>8.2f}<br>"
+            )
+            
+            self.neuro_label.setText(text)
+            self.inspect_group.setTitle(f"Neuro-Probe: ({r}, {c})")
+
+        
     def update_display(self):
         """Redraws everything using the pre-converted JAX arrays."""
         idx = self.maze_slider.value()
         if self.current_mazes is None: return
         
-        # Use the pre-converted JAX slice (extremely fast)
         maze = self.current_mazes[idx]
         maze_jax_slice = self.current_mazes_jax[idx]
+
+        self.view_oracle.clear_highlights()
+        self.view_agent.clear_highlights()
 
         # 1. Update Oracle
         self.view_oracle.set_maze(maze)
@@ -288,9 +382,15 @@ class AliosWindow(QtWidgets.QWidget):
 
         # 2. Update Agent
         self.view_agent.set_maze(maze)
-        if self.current_agent_q is not None and hasattr(self, 'current_vector_decoder'):
-            # This logic now runs on pre-allocated JAX memory
-            state_id_map = self.current_vector_decoder(maze_jax_slice)
+        # FIX: Check for the new variable name 'vector_decoder_jit'
+        if self.current_agent_q is not None and hasattr(self, 'vector_decoder_jit'):
+            # Calculate State Map using JIT function
+            state_id_map = self.vector_decoder_jit(maze_jax_slice)
+            
+            # Feed state map to the Probe (for the click-to-highlight feature)
+            self.view_agent.set_state_map(state_id_map)
+            
+            # Calculate Actions
             agent_actions = np.argmax(self.current_agent_q[state_id_map], axis=-1)
             
             oracle_actions = self.current_vi_policies[idx] if self.current_vi_policies is not None else None
