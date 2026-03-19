@@ -19,11 +19,21 @@ class MazeView(pg.PlotWidget):
         self.hideAxis('bottom')
         self.hideAxis('left')
         self.getViewBox().invertY(True)
+
+        # --- Lock the view range so it stops resizing ---
+        self.getViewBox().setMouseEnabled(x=False, y=False)
+        self.getViewBox().disableAutoRange()
+        self.setRange(xRange=[-0.5, 15.5], yRange=[-0.5, 15.5], padding=0)
         
         self.img = pg.ImageItem()
         self.img.setPos(-0.5, -0.5) 
         self.addItem(self.img)
-        self.img.setZValue(0)
+
+        # THE HIGHLIGHT MASK (One single item for all highlights)
+        self.highlight_mask = pg.ImageItem()
+        self.highlight_mask.setPos(-0.5, -0.5)
+        self.highlight_mask.setZValue(10) # High Z-index to be on top
+        self.addItem(self.highlight_mask)
 
         # Markers
         self.start_marker = QtWidgets.QGraphicsRectItem(-0.5, -0.5, 1, 1)
@@ -49,6 +59,13 @@ class MazeView(pg.PlotWidget):
         self.g_text.setPos(15, 15)
         self.g_text.setZValue(2)
         self.addItem(self.g_text)
+
+        # Data storage for logic
+        self.maze_data = None 
+        self.current_state_map = None
+        self.arrow_map = {0: "↑", 1: "↓", 2: "←", 3: "→"}
+
+        self.scene().sigMouseClicked.connect(self.on_mouse_click)
 
         # Draw Grid Lines
         grid_pen = pg.mkPen(color='#333333', width=1)
@@ -88,11 +105,15 @@ class MazeView(pg.PlotWidget):
 
 
     def set_maze(self, maze_data):
+        self.maze_data = maze_data # Store for wall-check logic
         h, w = maze_data.shape
         rgb = np.zeros((h, w, 3), dtype=np.uint8)
-        rgb[maze_data == 1] =[30, 30, 30]
-        rgb[maze_data == 0] =[230, 230, 230]
+        rgb[maze_data == 1] = [30, 30, 30]
+        rgb[maze_data == 0] = [230, 230, 230]
         self.img.setImage(np.transpose(rgb, (1, 0, 2)))
+        
+        # Clear highlights when maze changes
+        self.clear_highlights()
 
     def draw_policy_vectorized(self, maze, action_grid, oracle_actions=None, base_color='#00BFFF'):
         for r in range(16):
@@ -124,10 +145,9 @@ class MazeView(pg.PlotWidget):
         self.current_state_map = np.array(state_map)
 
     def clear_highlights(self):
-        """Removes the yellow boxes and resets the title."""
-        for box in self.highlight_boxes:
-            self.removeItem(box)
-        self.highlight_boxes.clear()
+        # Create a completely transparent 16x16x4 (RGBA) image
+        blank = np.zeros((16, 16, 4), dtype=np.uint8)
+        self.highlight_mask.setImage(blank)
         self.setTitle(self.default_title, color='#AAAAAA', size='14pt')
 
     def on_mouse_click(self, event):
@@ -138,6 +158,10 @@ class MazeView(pg.PlotWidget):
             # --- FIX: Safety Clipping to prevent IndexError ---
             c = int(np.clip(round(pos.x()), 0, 15))
             r = int(np.clip(round(pos.y()), 0, 15))
+
+            # --- FIX: Logic to ignore walls ---
+            if self.maze_data is not None and self.maze_data[r, c] == 1:
+                return # Don't probe walls
             
             if self.current_state_map is not None:
                 state_id = int(self.current_state_map[r, c])
@@ -149,16 +173,21 @@ class MazeView(pg.PlotWidget):
                 self.cellClicked.emit(r, c, state_id, count)
 
     def highlight_aliased_states(self, state_id):
-        self.clear_highlights()
+        # Create an RGBA image for the mask
+        # Shape (Columns, Rows, 4)
+        mask_data = np.zeros((16, 16, 4), dtype=np.uint8)
+        
+        # Find aliased coordinates
         aliased_coords = np.argwhere(self.current_state_map == state_id)
         
-        box_pen = pg.mkPen(color='#FFD700', width=3)
+        # "Paint" the mask: Gold color [255, 215, 0] with 120 alpha (transparency)
         for (r, c) in aliased_coords:
-            rect = QtWidgets.QGraphicsRectItem(c - 0.5, r - 0.5, 1, 1)
-            rect.setPen(box_pen)
-            rect.setZValue(5)
-            self.addItem(rect)
-            self.highlight_boxes.append(rect)
+            # We only highlight paths, not walls
+            if self.maze_data[r, c] == 0:
+                mask_data[c, r] = [255, 215, 0, 120] 
         
-        # Return the count so on_mouse_click can send it to the engine
+        self.highlight_mask.setImage(mask_data)
+        
+        # Update Title
+        self.setTitle(f"{self.default_title} | <span style='color: #FFD700;'>State ID: {state_id} ({len(aliased_coords)} locations)</span>")
         return len(aliased_coords)

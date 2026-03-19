@@ -145,18 +145,26 @@ class AliosWindow(QtWidgets.QWidget):
 
 
         # --- Stats Group ---
-        self.stats_group = QtWidgets.QGroupBox("Statistical Performance")
+        self.stats_group = QtWidgets.QGroupBox("Statistical Performance Profile")
         stats_layout = QtWidgets.QVBoxLayout(self.stats_group)
         
         self.run_test_btn = QtWidgets.QPushButton("Run Batch Test (1000 Mazes)")
-        self.run_test_btn.setStyleSheet("background-color: #28A745; color: white; font-weight: bold;")
+        self.run_test_btn.setMinimumHeight(40)
+        self.run_test_btn.setStyleSheet("background-color: #28A745; color: white; font-weight: bold; border-radius: 5px;")
         
-        self.stats_display = QtWidgets.QLabel("Success Rate: --\nAvg Steps: --")
-        self.stats_display.setStyleSheet("font-family: monospace; color: #00FF00;")
+        self.stats_display = QtWidgets.QLabel("Select a dataset and run test...")
+        self.stats_display.setStyleSheet("""
+            font-family: 'Courier New'; 
+            font-size: 10pt; 
+            color: #00FF00; 
+            background-color: #000; 
+            padding: 8px;
+        """)
         
         stats_layout.addWidget(self.run_test_btn)
         stats_layout.addWidget(self.stats_display)
-        self.sidebar_layout.insertWidget(2, self.stats_group) # Insert near top
+        self.sidebar_layout.insertWidget(2, self.stats_group)
+
 
         # --- Micro-Inspector (Neuro-Probe) ---
         self.inspect_group = QtWidgets.QGroupBox("Neuro-Probe: Q-Values")
@@ -320,25 +328,57 @@ class AliosWindow(QtWidgets.QWidget):
         if self.current_agent_q is None or self.current_mazes_jax is None:
             return
             
-        self.run_test_btn.setText("Testing...")
+        self.run_test_btn.setText("Computing Rollouts...")
         QtWidgets.QApplication.processEvents()
         
-        # FIX: Pass the RAW version to evaluate_dataset
+        # 1. Run JAX Rollouts
         res = core_logic.evaluate_dataset(
             self.current_agent_q, 
             self.current_mazes_jax, 
             self.vector_decoder_raw
         )
         
-        reached_goal = np.array(res[3])
-        steps = np.array(res[2])
+        # Unpack results from JAX
+        # (r, c, steps, collisions, reached_goal)
+        steps_arr = np.array(res[2])
+        colls_arr = np.array(res[3])
+        goal_arr = np.array(res[4])
         
-        success_rate = (np.sum(reached_goal) / len(reached_goal)) * 100
-        avg_steps = np.mean(steps[reached_goal == True]) if np.any(reached_goal) else 0
+        # 2. Basic Stats
+        total = len(goal_arr)
+        success_count = np.sum(goal_arr)
+        success_rate = (success_count / total) * 100
+        timeout_rate = (np.sum(steps_arr >= 500) / total) * 100
         
+        # 3. Efficiency Stats (Successful runs only)
+        avg_steps = 0
+        avg_colls = 0
+        opt_gap = 1.0
+        
+        if success_count > 0:
+            success_mask = (goal_arr == True)
+            avg_steps = np.mean(steps_arr[success_mask])
+            avg_colls = np.mean(colls_arr[success_mask])
+            
+            # --- THE OPTIMALITY GAP ---
+            if self.current_vi_policies is not None:
+                # Calculate Oracle's average steps for the SAME successful mazes
+                # (Remember: VI values at start (0,0) are -steps to goal)
+                # We use absolute because values are negative
+                oracle_steps_all = np.abs(self.current_vi_values[:, 0, 0])
+                avg_oracle_steps = np.mean(oracle_steps_all[success_mask])
+                opt_gap = avg_steps / avg_oracle_steps
+
+        # 4. Display Result
         self.stats_display.setText(
-            f"Success Rate: {success_rate:.1f}%\n"
-            f"Avg Path:     {avg_steps:.1f} steps"
+            f"<b>RESULT SUMMARY:</b><br>"
+            f"-------------------------<br>"
+            f"Success Rate : {success_rate:>6.1f}%<br>"
+            f"Timeout Rate : {timeout_rate:>6.1f}%<br>"
+            f"Avg Collide  : {avg_colls:>6.1f}<br>"
+            f"Avg Steps    : {avg_steps:>6.1f}<br>"
+            f"-------------------------<br>"
+            f"<b style='color: #FFD700;'>Optimality Gap: {opt_gap:.2f}x</b>"
         )
         self.run_test_btn.setText("Run Batch Test (1000 Mazes)")
 

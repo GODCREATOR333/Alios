@@ -48,33 +48,41 @@ DECODERS = {
     "3x3_base3_compass": decode_pomdp_3x3_base3
 }
 
-# --- THE EVALUATOR ---
-# static_argnums=2 tells JAX that the 3rd argument (index 2: state_map_func) 
-# is a constant function, not a data array.
+
 @partial(jax.jit, static_argnums=(2,))
 def evaluate_dataset(q_table, dataset_jax, state_map_func):
-    # 1. Map all 1000 mazes to state IDs in parallel
     all_state_maps = jax.vmap(state_map_func)(dataset_jax)
-    
-    # 2. Get optimal actions
     all_actions = jnp.argmax(q_table[all_state_maps], axis=-1)
 
     def single_maze_rollout(maze, actions):
-        def cond(state): return (state[2] < 500) & (~state[3])
+        def cond(state): 
+            # (r, c, steps, collisions, done)
+            return (state[2] < 500) & (~state[4])
+
         def body(state):
-            r, c, steps, done = state
+            r, c, steps, collisions, done = state
             action = actions[r, c]
+            
             dr = jnp.array([-1, 1, 0, 0])[action]
             dc = jnp.array([0, 0, -1, 1])[action]
             nr, nc = r + dr, c + dc
-            invalid = (nr<0)|(nr>=16)|(nc<0)|(nc>=16) | (maze[jnp.clip(nr,0,15), jnp.clip(nc,0,15)]==1)
-            fr, fc = jnp.where(invalid, r, nr), jnp.where(invalid, c, nc)
+            
+            # Physics
+            hit_wall = (nr<0)|(nr>=16)|(nc<0)|(nc>=16) | (maze[jnp.clip(nr,0,15), jnp.clip(nc,0,15)]==1)
+            
+            fr, fc = jnp.where(hit_wall, r, nr), jnp.where(hit_wall, c, nc)
             is_goal = (fr==15)&(fc==15)
-            return (fr, fc, steps + 1, is_goal)
+            
+            # Increment collisions if hit_wall is true
+            return (fr, fc, steps + 1, collisions + jnp.where(hit_wall, 1, 0), is_goal)
 
-        return jax.lax.while_loop(cond, body, (0, 0, 0, False))
+        # Start state: (r, c, steps, collisions, done)
+        init = (0, 0, 0, 0, False)
+        return jax.lax.while_loop(cond, body, init)
 
-    return jax.vmap(single_maze_rollout)(dataset_jax, all_actions)
+    results = jax.vmap(single_maze_rollout)(dataset_jax, all_actions)
+    # Returns: (final_r, final_c, total_steps, total_collisions, reached_goal)
+    return results
 
 
 
