@@ -295,6 +295,15 @@ class AliosWindow(QtWidgets.QWidget):
         # Connect Neuro-Probe to BOTH Agent views so you can click the heatmap too!
         self.view_agent_policy.cellClicked.connect(self.update_neuro_probe)
         self.view_agent_values.cellClicked.connect(self.update_neuro_probe)
+
+        # Connect Oracle views to the probe logic
+        self.view_oracle_policy.cellClicked.connect(self.update_neuro_probe)
+        self.view_oracle_values.cellClicked.connect(self.update_neuro_probe)
+
+        # Connect Agent views (as you had before)
+        self.view_agent_policy.cellClicked.connect(self.update_neuro_probe)
+        self.view_agent_values.cellClicked.connect(self.update_neuro_probe)
+        self.view_agent_entropy.cellClicked.connect(self.update_neuro_probe)
     
     def keyPressEvent(self, event):
         """Allows global keyboard arrow keys to scrub through mazes."""
@@ -455,6 +464,19 @@ class AliosWindow(QtWidgets.QWidget):
         if self.current_agent_q is not None:
             q_vals = self.current_agent_q[state_id]
             
+            # Colors for sync
+            blue_rgba = [0, 191, 255, 120]
+            gold_rgba = [255, 215, 0, 120]
+
+            # 1. Update ALL Highlights simultaneously
+            self.view_oracle_policy.highlight_aliased_states(state_id, blue_rgba)
+            self.view_oracle_values.highlight_aliased_states(state_id, blue_rgba)
+            
+            self.view_agent_policy.highlight_aliased_states(state_id, gold_rgba)
+            self.view_agent_values.highlight_aliased_states(state_id, gold_rgba)
+            self.view_agent_entropy.highlight_aliased_states(state_id, gold_rgba)
+
+
             # 1. Calculate Entropy (Confusion)
             entropy = core_logic.calculate_entropy(q_vals)
             
@@ -528,6 +550,10 @@ class AliosWindow(QtWidgets.QWidget):
         if self.current_agent_q is not None and callable(getattr(self, 'vector_decoder_jit', None)):
             
             state_id_map = self.vector_decoder_jit(maze_jax_slice)
+
+            # Give the agent's view of the world to the ORACLE panels
+            self.view_oracle_policy.set_state_map(state_id_map)
+            self.view_oracle_values.set_state_map(state_id_map)
 
             # Q-vectors per state: (16, 16, 4)
             q_vectors = self.current_agent_q[state_id_map]

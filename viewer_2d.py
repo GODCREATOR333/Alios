@@ -191,49 +191,42 @@ class MazeView(pg.PlotWidget):
         self.highlight_mask.setImage(blank)
         self.setTitle(self.default_title, color='#AAAAAA', size='14pt')
 
+    def highlight_aliased_states(self, state_id, color_rgba=[255, 215, 0, 120]):
+        """Paint aliased cells with a specific color (Default Gold)."""
+        if self.current_state_map is None: return 0
+        
+        mask_data = np.zeros((16, 16, 4), dtype=np.uint8)
+        aliased_coords = np.argwhere(self.current_state_map == state_id)
+        
+        for (r, c) in aliased_coords:
+            if self.maze_data[r, c] == 0:
+                mask_data[c, r] = color_rgba 
+        
+        self.highlight_mask.setImage(mask_data)
+        return len(aliased_coords)
+
     def on_mouse_click(self, event):
         """Fires when the user clicks the maze."""
         if event.button() == QtCore.Qt.LeftButton:
             pos = self.getViewBox().mapSceneToView(event.scenePos())
-            
-            # --- FIX: Safety Clipping to prevent IndexError ---
-            c = int(np.clip(round(pos.x()), 0, 15))
-            r = int(np.clip(round(pos.y()), 0, 15))
+            c, r = int(np.floor(pos.x() + 0.5)), int(np.floor(pos.y() + 0.5))
+            c, r = np.clip(c, 0, 15), np.clip(r, 0, 15)
 
-            # --- FIX: Logic to ignore walls ---
-            if self.maze_data is not None and self.maze_data[r, c] == 1:
-                return # Don't probe walls
-            
+            if self.maze_data is not None and self.maze_data[r, c] == 1: return
+
             if self.current_state_map is not None:
                 state_id = int(self.current_state_map[r, c])
                 
-                # 1. Highlight them (this method returns the count now)
-                count = self.highlight_aliased_states(state_id)
+                # --- NEW: Decide color based on which panel was clicked ---
+                # Oracle/VI panel -> Light Blue. Agent panel -> Gold.
+                if "VI" in self.default_title or "Oracle" in self.default_title:
+                    local_color = [0, 191, 255, 120] # Light Blue
+                else:
+                    local_color = [255, 215, 0, 120] # Gold
                 
-                # 2. Emit signal with ALL 4 pieces of data
+                count = self.highlight_aliased_states(state_id, color_rgba=local_color)
                 self.cellClicked.emit(r, c, state_id, count)
-
-    def highlight_aliased_states(self, state_id):
-        # Create an RGBA image for the mask
-        # Shape (Columns, Rows, 4)
-        mask_data = np.zeros((16, 16, 4), dtype=np.uint8)
-        
-        # Find aliased coordinates
-        aliased_coords = np.argwhere(self.current_state_map == state_id)
-        
-        # "Paint" the mask: Gold color [255, 215, 0] with 120 alpha (transparency)
-        for (r, c) in aliased_coords:
-            # We only highlight paths, not walls
-            if self.maze_data[r, c] == 0:
-                mask_data[c, r] = [255, 215, 0, 120] 
-        
-        self.highlight_mask.setImage(mask_data)
-        
-        # Update Title
-        self.setTitle(f"{self.default_title} | <span style='color: #FFD700;'>State ID: {state_id} ({len(aliased_coords)} locations)</span>")
-        return len(aliased_coords)
-    
-
+                
     def set_heatmap(self, maze_data, value_data):
         self.clear_highlights()
         v = np.array(value_data)
