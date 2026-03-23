@@ -56,9 +56,10 @@ class AliosWindow(QtWidgets.QWidget):
 
         # --- 1. WORKSPACE SWITCHER HEADER ---
         self.header = QtWidgets.QWidget()
-        self.header.setFixedHeight(50)
+        self.header.setMinimumHeight(55)
         self.header.setStyleSheet("background-color: #1a1a1a; border-bottom: 1px solid #333;")
         header_layout = QtWidgets.QHBoxLayout(self.header)
+        header_layout.setContentsMargins(10, 5, 10, 0)
         
         self.btn_inspector = QtWidgets.QPushButton("DEEP INSPECTOR")
         self.btn_analytics = QtWidgets.QPushButton("ANALYTICS LAB")
@@ -91,9 +92,40 @@ class AliosWindow(QtWidgets.QWidget):
         # ============================
         # SIDEBAR (LEFT)
         # ============================
+        # 1. Create the Scroll Area
+        self.sidebar_scroll = QtWidgets.QScrollArea()
+        self.sidebar_scroll.setWidgetResizable(True) # Lets the inner widget expand
+        self.sidebar_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.sidebar_scroll.setMinimumWidth(320) # Slightly wider to fit the scrollbar
+        
+        # 2. Sleek Dark Mode Scrollbar CSS
+        self.sidebar_scroll.setStyleSheet("""
+            QScrollBar:vertical {
+                border: none;
+                background: #121212;
+                width: 8px;
+                margin: 0px 0px 0px 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #555;
+                min-height: 30px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #777;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: none;
+                height: 0px;
+            }
+        """)
+
+        # 3. Create the actual sidebar widget that holds the UI
         self.sidebar = QtWidgets.QWidget()
         self.sidebar_layout = QtWidgets.QVBoxLayout(self.sidebar)
-        self.sidebar.setMinimumWidth(300)
+        self.sidebar_layout.setContentsMargins(10, 10, 15, 10) # Extra right margin for scrollbar
+        self.sidebar_layout.setSpacing(12)
 
         # --- NEW: Symmetrical Source Selection ---
         self.source_group = QtWidgets.QGroupBox("Panel Sources")
@@ -196,6 +228,7 @@ class AliosWindow(QtWidgets.QWidget):
         self.sidebar_layout.addWidget(self.config_group)
 
         self.sidebar_layout.addStretch()
+        self.sidebar_scroll.setWidget(self.sidebar)
 
         # ============================
         # VIEWER PANELS (RIGHT SIDE OF SPLITTER)
@@ -237,9 +270,9 @@ class AliosWindow(QtWidgets.QWidget):
         self.viewer_layout.addWidget(self.viewer_splitter)
 
         # Assemble Main Splitter
-        self.splitter.addWidget(self.sidebar)
+        self.splitter.addWidget(self.sidebar_scroll)
         self.splitter.addWidget(self.viewer_widget)
-        self.splitter.setSizes([300, 1100])
+        self.splitter.setSizes([320, 1080])
         self.inspector_layout.addWidget(self.splitter)
 
         self.workspaces.addWidget(self.inspector_page) # Index 0
