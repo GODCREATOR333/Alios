@@ -34,10 +34,62 @@ class AliosWindow(QtWidgets.QWidget):
         self.refresh_runs()
         self.scan_datasets()
 
+        # --- 5.Track two more Q-tables and two more decoders in the "Backpack.
+        self.agent_a_q = None
+        self.agent_b_q = None
+        self.decoder_a = None
+        self.decoder_b = None
+
     def init_ui(self):
         """Builds the layout and widgets (Modular approach)."""
-        self.main_layout = QtWidgets.QHBoxLayout(self)
+
+        
+        # Change 1: Use Vertical Layout for the whole window
+        self.main_container = QtWidgets.QVBoxLayout(self)
+        self.main_container.setContentsMargins(0, 0, 0, 0)
+        self.main_container.setSpacing(0)
+
+        # Change 2: Create the Header Bar
+        self.header = QtWidgets.QWidget()
+        self.header.setFixedHeight(50)
+        self.header.setStyleSheet("background-color: #1a1a1a; border-bottom: 1px solid #333;")
+        header_layout = QtWidgets.QHBoxLayout(self.header)
+        
+        # Change 3: Create Workspace Buttons
+        self.btn_inspector = QtWidgets.QPushButton("DEEP INSPECTOR")
+        self.btn_arena = QtWidgets.QPushButton("POLICY ARENA")
+        self.btn_analytics = QtWidgets.QPushButton("ANALYTICS LAB")
+        
+        btn_style = """
+            QPushButton { 
+                background-color: transparent; color: #888; font-weight: bold; 
+                padding: 10px 20px; border: None; font-size: 10pt;
+            }
+            QPushButton:checked { color: #00BFFF; border-bottom: 2px solid #00BFFF; }
+            QPushButton:hover { color: #DDD; }
+        """
+        self.workspace_group = QtWidgets.QButtonGroup(self)
+        for i, btn in enumerate([self.btn_inspector, self.btn_arena, self.btn_analytics]):
+            btn.setStyleSheet(btn_style)
+            btn.setCheckable(True)
+            header_layout.addWidget(btn)
+            self.workspace_group.addButton(btn, i)
+        
+        self.btn_inspector.setChecked(True)
+        header_layout.addStretch()
+        self.main_container.addWidget(self.header)
+
+        # Change 4: Create the Stacked Widget (The Content Area)
+        self.workspaces = QtWidgets.QStackedWidget()
+        self.main_container.addWidget(self.workspaces)
+
+        # --- WORKSPACE 1: DEEP INSPECTOR (Existing Logic) ---
+        self.inspector_page = QtWidgets.QWidget()
+        self.inspector_layout = QtWidgets.QHBoxLayout(self.inspector_page)
+        
+        # From here, use your EXISTING code to build the sidebar and splitter
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        # ... [Paste all your existing Sidebar & Viewer Splitter logic here] ...
 
         # ============================
         # SIDEBAR (LEFT)
@@ -266,11 +318,73 @@ class AliosWindow(QtWidgets.QWidget):
         self.splitter.addWidget(self.sidebar)
         self.splitter.addWidget(self.viewer_widget)
         self.splitter.setSizes([300, 1100])
-        self.main_layout.addWidget(self.splitter)
+        self.inspector_layout.addWidget(self.splitter)
 
 
         # Agent View (Stays the same)
         self.view_agent = MazeView(title="Agent Policy (Hypothesis)")
+
+
+        # Finalize Workspace 1
+        self.inspector_layout.addWidget(self.splitter)
+        self.workspaces.addWidget(self.inspector_page)
+
+
+
+        # --- WORKSPACE 2 & 3: PLACEHOLDERS ---
+        self.arena_page = QtWidgets.QLabel("Arena Mode: Compare Agent vs Agent")
+        self.arena_page.setStyleSheet("color: #555; font-size: 20pt;")
+        self.arena_page.setAlignment(QtCore.Qt.AlignCenter)
+        self.workspaces.addWidget(self.arena_page)
+
+        self.analytics_page = QtWidgets.QLabel("Analytics Lab: Statistical Benchmarking")
+        self.analytics_page.setStyleSheet("color: #555; font-size: 20pt;")
+        self.analytics_page.setAlignment(QtCore.Qt.AlignCenter)
+        self.workspaces.addWidget(self.analytics_page)
+
+        # --- WORKSPACE 2: POLICY ARENA ---
+        self.arena_page = QtWidgets.QWidget()
+        arena_layout = QtWidgets.QVBoxLayout(self.arena_page)
+
+        # 1. Arena Header (Run Selectors)
+        arena_controls = QtWidgets.QGroupBox("Combatant Selection")
+        arena_controls_layout = QtWidgets.QHBoxLayout(arena_controls)
+        
+        self.run_a_selector = QtWidgets.QComboBox()
+        self.run_b_selector = QtWidgets.QComboBox()
+        arena_controls_layout.addWidget(QtWidgets.QLabel("Agent A:"))
+        arena_controls_layout.addWidget(self.run_a_selector)
+        arena_controls_layout.addSpacing(20)
+        arena_controls_layout.addWidget(QtWidgets.QLabel("Agent B:"))
+        arena_controls_layout.addWidget(self.run_b_selector)
+        
+        arena_layout.addWidget(arena_controls)
+
+        # 2. Arena Viewer Splitter
+        self.arena_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        
+        # Tabs for Agent A
+        self.tabs_a = QtWidgets.QTabWidget()
+        self.tabs_a.setStyleSheet(self.oracle_tabs.styleSheet())
+        self.view_a_policy = MazeView(title="Agent A: Policy")
+        self.view_a_values = MazeView(title="Agent A: Values")
+        self.tabs_a.addTab(self.view_a_policy, "Policy")
+        self.tabs_a.addTab(self.view_a_values, "Value")
+
+        # Tabs for Agent B
+        self.tabs_b = QtWidgets.QTabWidget()
+        self.tabs_b.setStyleSheet(self.oracle_tabs.styleSheet())
+        self.view_b_policy = MazeView(title="Agent B: Policy")
+        self.view_b_values = MazeView(title="Agent B: Values")
+        self.tabs_b.addTab(self.view_b_policy, "Policy")
+        self.tabs_b.addTab(self.view_b_values, "Value")
+
+        self.arena_splitter.addWidget(self.tabs_a)
+        self.arena_splitter.addWidget(self.tabs_b)
+        self.arena_splitter.setSizes([600, 600])
+        
+        arena_layout.addWidget(self.arena_splitter)
+        self.workspaces.addWidget(self.arena_page) # Replace placeholder at index 1
 
 
     def connect_signals(self):
@@ -300,10 +414,21 @@ class AliosWindow(QtWidgets.QWidget):
         self.view_oracle_policy.cellClicked.connect(self.update_neuro_probe)
         self.view_oracle_values.cellClicked.connect(self.update_neuro_probe)
 
-        # Connect Agent views (as you had before)
+        # Connect Agent views 
         self.view_agent_policy.cellClicked.connect(self.update_neuro_probe)
         self.view_agent_values.cellClicked.connect(self.update_neuro_probe)
         self.view_agent_entropy.cellClicked.connect(self.update_neuro_probe)
+
+        # New: Workspace Switching
+        self.workspace_group.buttonClicked[int].connect(self.on_workspace_changed)
+
+        # Workspace 2 Arena
+        self.run_a_selector.currentIndexChanged.connect(self.on_run_a_selected)
+        self.run_b_selector.currentIndexChanged.connect(self.on_run_b_selected)
+
+    def on_workspace_changed(self, index):
+        """Changes the visible workspace."""
+        self.workspaces.setCurrentIndex(index)
     
     def keyPressEvent(self, event):
         """Allows global keyboard arrow keys to scrub through mazes."""
@@ -313,6 +438,36 @@ class AliosWindow(QtWidgets.QWidget):
             self.maze_slider.setValue(self.maze_slider.value() - 1)
         else:
             super().keyPressEvent(event)
+
+    
+    # ============================
+    # WORKSPACE 2
+    # ============================
+
+    def refresh_runs(self):
+        runs = db_manager.get_all_runs()
+        # Update all 3 selectors
+        for s in [self.run_selector, self.run_a_selector, self.run_b_selector]:
+            s.blockSignals(True)
+            s.clear()
+            s.addItems(runs)
+            s.blockSignals(False)
+
+    def on_run_a_selected(self):
+        run_id = self.run_a_selector.currentText()
+        details = db_manager.get_run_details(run_id)
+        if details:
+            self.agent_a_q = jnp.array(np.load(details['path']))
+            self.decoder_a = core_logic.STATE_MAP_FUNCS_JIT.get(details['state_repr'])
+            self.update_display()
+
+    def on_run_b_selected(self):
+        run_id = self.run_b_selector.currentText()
+        details = db_manager.get_run_details(run_id)
+        if details:
+            self.agent_b_q = jnp.array(np.load(details['path']))
+            self.decoder_b = core_logic.STATE_MAP_FUNCS_JIT.get(details['state_repr'])
+            self.update_display()
 
     # ============================
     # DATA & LOGIC METHODS
@@ -584,3 +739,33 @@ class AliosWindow(QtWidgets.QWidget):
 
             # Draw entropy heatmap
             self.view_agent_entropy.set_heatmap(maze, agent_entropy)
+
+            # --- ARENA WORKSPACE UPDATES ---
+            idx = self.maze_slider.value()
+            maze = self.current_mazes[idx]
+            maze_jax = self.current_mazes_jax[idx]
+
+            # Draw Agent A
+            if self.agent_a_q is not None and self.decoder_a:
+                map_a = self.decoder_a(maze_jax)
+                actions_a = np.argmax(self.agent_a_q[map_a], axis=-1)
+                values_a = np.max(self.agent_a_q[map_a], axis=-1)
+                
+                self.view_a_policy.set_maze(maze)
+                self.view_a_values.set_maze(maze)
+                self.view_a_policy.draw_policy_vectorized(maze, actions_a)
+                self.view_a_values.set_heatmap(maze, values_a)
+
+            # Draw Agent B
+            if self.agent_b_q is not None and self.decoder_b:
+                map_b = self.decoder_b(maze_jax)
+                actions_b = np.argmax(self.agent_b_q[map_b], axis=-1)
+                values_b = np.max(self.agent_b_q[map_b], axis=-1)
+                
+                self.view_b_policy.set_maze(maze)
+                self.view_b_values.set_maze(maze)
+                
+                # AGENT COMPARISON: Highlight where B differs from A
+                # We pass actions_a as the 'oracle' for this view
+                self.view_b_policy.draw_policy_vectorized(maze, actions_b, oracle_actions=actions_a)
+                self.view_b_values.set_heatmap(maze, values_b)
