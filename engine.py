@@ -690,99 +690,103 @@ class AliosWindow(QtWidgets.QWidget):
         self.btn_run_benchmarks.setText("RUN AGENT COMPARISON")
         self.btn_run_benchmarks.setEnabled(True)
 
-    def update_neuro_probe(self, r, c, state_id, aliased_count):
-        # If toggled off
+    def get_real_maze_idx(self):
+        """Translates the current slider rank into the actual dataset index."""
+        slider_val = self.maze_slider.value()
+        # If sorting is enabled, look up the real index in the sort map
+        if hasattr(self, 'sort_checkbox') and self.sort_checkbox.isChecked() and hasattr(self, 'right_sort_map'):
+            return int(self.right_sort_map[slider_val])
+        # Otherwise, the slider value is the index
+        return slider_val
+
+    def update_neuro_probe(self, r, c, state_id_argument, count_argument):
+        # --- 1. THE RESET FIX (Toggle Off) ---
         if r == -1:
             self.neuro_label.setText("Click a cell to probe its internal state.")
-            for view in[self.view_left_policy, self.view_left_values, self.view_left_entropy,
+            self.inspect_group.setTitle("Neuro-Probe")
+            for view in [self.view_left_policy, self.view_left_values, self.view_left_entropy,
                          self.view_right_policy, self.view_right_values, self.view_right_entropy]:
                 view.clear_highlights()
                 view.clear_trajectory()
             return
-        
-        # Define Research Colors
-        color_oracle = [0, 191, 255, 120]  # Light Blue
-        color_agent  = [255, 215, 0, 120]  # Gold
 
-        # 3. Direct the Rendering (This is the modular part)
-        # Left Side
-        l_color = color_oracle if self.left_type == 'oracle' else color_agent
-        self.view_left_policy.highlight_aliased_states(state_id, l_color)
-        self.view_left_values.highlight_aliased_states(state_id, l_color)
-        self.view_left_entropy.highlight_aliased_states(state_id, l_color)
-
-        # Right Side
-        r_color = color_oracle if self.right_type == 'oracle' else color_agent
-        self.view_right_policy.highlight_aliased_states(state_id, r_color)
-        self.view_right_values.highlight_aliased_states(state_id, r_color)
-        self.view_right_entropy.highlight_aliased_states(state_id, r_color)
-        
-        # SYNC THE STATE MAPS FOR HIGHLIGHTING ---
-        idx = self.maze_slider.value()
+        # 2. Get correct indices for the current maze (Supports Sorting)
+        idx = self.get_real_maze_idx()
         maze_jax = self.current_mazes_jax[idx]
-        
-        # Determine which decoder the clicked panel is using
-        active_decoder = self.right_decoder_jit if self.right_type == 'agent' else self.left_decoder_jit
-        if active_decoder is not None:
-            shared_state_map = active_decoder(maze_jax)
+        maze_numpy = self.current_mazes[idx]
+
+        # --- 3. DETERMINE THE ACTIVE "EYES" AND "BRAIN" ---
+        # Priority: Right Agent > Left Agent > Default MDP
+        if self.right_type == 'agent' and self.right_q is not None:
+            active_jit = self.right_decoder_jit
+            active_scalar = self.right_decoder
+            active_q = self.right_q
+        elif self.left_type == 'agent' and self.left_q is not None:
+            active_jit = self.left_decoder_jit
+            active_scalar = self.left_decoder
+            active_q = self.left_q
+        else:
+            active_jit = core_logic.STATE_MAP_FUNCS_JIT['mdp']
+            active_scalar = core_logic.decode_mdp
+            active_q = None
+
+        if active_jit is not None:
+            # --- 4. THE FIRST-CLICK FIX: RECALCULATE STATE ID ---
+            # We calculate the ID here in the engine using the active agent's logic.
+            # This makes the click logic independent of which panel was clicked.
+            state_id = int(active_scalar(maze_numpy, r, c))
             
-            # Force ALL views to use the clicked panel's state map for the highlight
-            self.view_left_policy.set_state_map(shared_state_map)
-            self.view_left_values.set_state_map(shared_state_map)
-            self.view_left_entropy.set_state_map(shared_state_map)
-        # -------------------------------------------------------
-
-        # Highlight ALL views
-        blue_rgba =[0, 191, 255, 120]
-        gold_rgba =[255, 215, 0, 120]
-        L_color = blue_rgba if self.left_type == 'oracle' else gold_rgba
-        R_color = blue_rgba if self.right_type == 'oracle' else gold_rgba
-
-        self.view_left_policy.highlight_aliased_states(state_id, L_color)
-        self.view_left_values.highlight_aliased_states(state_id, L_color)
-        self.view_left_entropy.highlight_aliased_states(state_id, L_color)
-        
-        self.view_right_policy.highlight_aliased_states(state_id, R_color)
-        self.view_right_values.highlight_aliased_states(state_id, R_color)
-        self.view_right_entropy.highlight_aliased_states(state_id, R_color)
-
-        # We probe the Right Agent by default. If Right is Oracle, probe Left.
-        agent_q = self.right_q if self.right_q is not None else self.left_q
-        agent_decoder = self.right_decoder if self.right_decoder is not None else self.left_decoder
-
-        if agent_q is not None:
-            q_vals = agent_q[state_id]
-            entropy = core_logic.calculate_entropy(q_vals)
+            # Calculate the shared map to know where the aliasing is
+            shared_map_jax = active_jit(maze_jax)
+            shared_map_np = np.array(shared_map_jax)
             
-            idx = self.maze_slider.value()
-            oracle_p = self.current_vi_policies[idx] if self.current_vi_policies is not None else None
+            # Recalculate true aliased count
+            aliased_count = int(np.sum(shared_map_np == state_id))
             
-            if oracle_p is not None and hasattr(self, 'right_decoder_jit') and self.right_decoder_jit is not None:
-                state_map = self.right_decoder_jit(self.current_mazes_jax[idx])
-                conflict = core_logic.calculate_conflict(state_id, state_map, oracle_p)
-            else:
+            # 5. SYNC COLORS: Left is Blue, Right is Gold
+            blue_rgba, gold_rgba = [0, 191, 255, 120], [255, 215, 0, 120]
+
+            # Update ALL 6 tabs with the fresh map and calculated State ID
+            for v in [self.view_left_policy, self.view_left_values, self.view_left_entropy]:
+                v.set_state_map(shared_map_np)
+                v.highlight_aliased_states(state_id, blue_rgba)
+            
+            for v in [self.view_right_policy, self.view_right_values, self.view_right_entropy]:
+                v.set_state_map(shared_map_np)
+                v.highlight_aliased_states(state_id, gold_rgba)
+
+            # 6. MATH & TRAJECTORY (Only if we have an agent brain)
+            if active_q is not None:
+                q_vals = active_q[state_id]
+                entropy = core_logic.calculate_entropy(q_vals)
+                
                 conflict = 0.0
-            
-            text = (
-                f"<b style='color:#FFD700;'>State ID:</b> {state_id}<br>"
-                f"<b style='color:#FFD700;'>Aliased:</b> {aliased_count} locations<br>"
-                f"<b style='color:#FFD700;'>Conflict:</b> {conflict:.1f}%<br>"
-                f"<b style='color:#FFD700;'>Entropy:</b> {entropy:.3f}<br>"
-                f"<hr style='border: 1px solid #444;'>"
-                f"<b>[↑] Up   :</b> {q_vals[0]:>8.2f}<br>"
-                f"<b>[↓] Down :</b> {q_vals[1]:>8.2f}<br>"
-                f"<b>[←] Left :</b> {q_vals[2]:>8.2f}<br>"
-                f"<b>[→] Right:</b> {q_vals[3]:>8.2f}<br>"
-            )
-            self.neuro_label.setText(text)
+                if self.current_vi_policies is not None:
+                    oracle_p = self.current_vi_policies[idx]
+                    conflict = core_logic.calculate_conflict(state_id, shared_map_np, oracle_p)
+                
+                # Update Sidebar Text
+                color_id = "#FFD700" 
+                text = (
+                    f"<b style='color:{color_id};'>State ID:</b> {state_id}<br>"
+                    f"<b style='color:{color_id};'>Aliased:</b> {aliased_count} locations<br>"
+                    f"<b style='color:{color_id};'>Conflict:</b> {conflict:.1f}%<br>"
+                    f"<b style='color:{color_id};'>Entropy:</b> {entropy:.3f}<br>"
+                    f"<hr style='border: 1px solid #444;'>"
+                    f"<b>[↑] Up   :</b> {q_vals[0]:>8.2f}<br>"
+                    f"<b>[↓] Down :</b> {q_vals[1]:>8.2f}<br>"
+                    f"<b>[←] Left :</b> {q_vals[2]:>8.2f}<br>"
+                    f"<b>[→] Right:</b> {q_vals[3]:>8.2f}<br>"
+                )
+                self.neuro_label.setText(text)
+                self.inspect_group.setTitle(f"Neuro-Probe: ({r}, {c})")
 
-            # Draw Trajectory
-            maze = self.current_mazes[idx]
-            path = core_logic.compute_rollout(maze, (r, c), agent_q, agent_decoder)
-            self.view_right_policy.draw_trajectory(path)
-            self.view_right_values.draw_trajectory(path)
-            self.view_left_policy.draw_trajectory(path)
-            self.view_left_values.draw_trajectory(path)
+                # Update Trajectory Line
+                path = core_logic.compute_rollout(maze_numpy, (r, c), active_q, active_scalar)
+                self.view_left_policy.draw_trajectory(path)
+                self.view_right_policy.draw_trajectory(path)
+            else:
+                self.neuro_label.setText("Probing Oracle (MDP mode).<br>No Q-values available.")
 
     def _get_panel_data(self, panel_type, q_table, decoder_jit, idx, maze_jax):
         """Helper to extract Actions, Values, Entropy, and StateMap."""

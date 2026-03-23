@@ -9,8 +9,8 @@ from functools import partial
 
 def decode_mdp(maze, r, c):
     """Classic Grid MDP: 0-255"""
-    # Use .astype instead of int()
-    return (r * 16 + c).astype(jnp.int32)
+    # Change (r * 16 + c).astype(jnp.int32) to this:
+    return jnp.int32(r * 16 + c)
 
 def decode_pomdp_3x3_base3(maze, r, c):
     """POMDP: 3x3 Window + Compass (Base-3 encoding)"""

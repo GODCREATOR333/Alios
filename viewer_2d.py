@@ -206,24 +206,28 @@ class MazeView(pg.PlotWidget):
         return len(aliased_coords)
 
     def on_mouse_click(self, event):
-        """Fires when the user clicks the maze."""
+        """Fires when the user clicks the maze. Minimal and robust."""
         if event.button() == QtCore.Qt.LeftButton:
             pos = self.getViewBox().mapSceneToView(event.scenePos())
+            
+            # Precise snapping
             c, r = int(np.floor(pos.x() + 0.5)), int(np.floor(pos.y() + 0.5))
             c, r = np.clip(c, 0, 15), np.clip(r, 0, 15)
 
+            # 1. Toggle Logic
             if (r, c) == self.last_clicked_pos:
                 self.clear_highlights()
-                self.cellClicked.emit(-1, -1, -1, 0)
+                self.cellClicked.emit(-1, -1, -1, 0) # Signal for "Reset"
                 return
 
-            if self.maze_data is not None and self.maze_data[r, c] == 1: return
+            # 2. Ignore walls
+            if self.maze_data is not None and self.maze_data[r, c] == 1:
+                return 
 
-            if self.current_state_map is not None:
-                self.last_clicked_pos = (r, c)
-                state_id = int(self.current_state_map[r, c])
-                aliased_coords = np.argwhere(self.current_state_map == state_id)
-                self.cellClicked.emit(r, c, state_id, len(aliased_coords))
+            # 3. Just report the coordinate. The Engine will handle the rest.
+            self.last_clicked_pos = (r, c)
+            # Note: We send 0, 0 for state_id and count because the Engine will calculate them
+            self.cellClicked.emit(r, c, 0, 0)
                 
     def set_heatmap(self, maze_data, value_data):
         self.clear_highlights()
