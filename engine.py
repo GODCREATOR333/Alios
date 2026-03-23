@@ -49,6 +49,10 @@ class AliosWindow(QtWidgets.QWidget):
         self.refresh_runs()
         self.scan_datasets()
 
+        # --5. Sorted Map ---
+        self.right_sort_map = np.arange(1000) # Default 1:1 mapping
+        self.sort_enabled = False
+
     def init_ui(self):
         """Builds the layout and widgets (Modular approach)."""
         self.main_container = QtWidgets.QVBoxLayout(self)
@@ -166,6 +170,10 @@ class AliosWindow(QtWidgets.QWidget):
         
         self.maze_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.maze_slider.setRange(0, 999)
+
+        self.sort_checkbox = QtWidgets.QCheckBox("Sort by Failure Severity")
+        self.sort_checkbox.setStyleSheet("color: #FF4500; font-weight: bold;")
+        maze_nav_layout.addWidget(self.sort_checkbox)
         
         self.maze_spinbox.setStyleSheet("QSpinBox { padding: 4px; border-radius: 6px; border: 1px solid #444; background-color: #1e1e1e; color: #ddd; }")
         self.maze_slider.setStyleSheet("""
@@ -304,6 +312,21 @@ class AliosWindow(QtWidgets.QWidget):
         lab_dataset_layout.addWidget(self.dataset_list_widget)
         lab_sidebar_layout.addWidget(self.lab_dataset_group)
 
+        # --- NEW: Scientific Lenses Selection ---
+        self.lab_lens_group = QtWidgets.QGroupBox("Scientific Lenses")
+        lab_lens_layout = QtWidgets.QVBoxLayout(self.lab_lens_group)
+        self.lens_list_widget = QtWidgets.QListWidget()
+        
+        # Populate the available lenses
+        for lens_name in['Success Rate vs Density', 'Optimality Scatter', 'Efficiency Distribution','Value Localization (Anderson)']:
+            item = QtWidgets.QListWidgetItem(lens_name)
+            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.Checked) # Check them by default
+            self.lens_list_widget.addItem(item)
+            
+        lab_lens_layout.addWidget(self.lens_list_widget)
+        lab_sidebar_layout.addWidget(self.lab_lens_group)
+
         # Execution Button
         self.btn_run_benchmarks = QtWidgets.QPushButton("RUN AGENT COMPARISON")
         self.btn_run_benchmarks.setMinimumHeight(50)
@@ -339,15 +362,21 @@ class AliosWindow(QtWidgets.QWidget):
         self.run_test_btn.clicked.connect(self.run_batch_test)
         self.workspace_group.buttonClicked[int].connect(self.on_workspace_changed)
 
+        # Redraw when sort is toggled
+        self.sort_checkbox.stateChanged.connect(self.update_display)
+        # Connect the Jump Bridge
+        self.plot_container.mazeSelected.connect(self.jump_to_maze)
+
         # Connect ALL 6 views to the neuro probe
         for view in[self.view_left_policy, self.view_left_values, self.view_left_entropy,
                      self.view_right_policy, self.view_right_values, self.view_right_entropy]:
             view.cellClicked.connect(self.update_neuro_probe)\
-            
         
         # Connect Lab Button
         self.btn_run_benchmarks.clicked.connect(self.execute_benchmarks)
-    
+        self.lens_list_widget.itemChanged.connect(self.on_lens_toggled)
+        self.plot_container.mazeSelected.connect(self.jump_to_maze)
+
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_Up or event.key() == QtCore.Qt.Key_Right:
             self.maze_slider.setValue(self.maze_slider.value() + 1)
@@ -358,6 +387,32 @@ class AliosWindow(QtWidgets.QWidget):
 
     def on_workspace_changed(self, index):
         self.workspaces.setCurrentIndex(index)
+    
+    def on_lens_toggled(self, item):
+        """Instantly updates the visible plots when a checkbox is toggled."""
+        active_lenses =[self.lens_list_widget.item(i).text() 
+                         for i in range(self.lens_list_widget.count()) 
+                         if self.lens_list_widget.item(i).checkState() == QtCore.Qt.Checked]
+        
+        # Tell the dashboard to re-draw using cached data
+        self.plot_container.update_active_lenses(active_lenses)
+
+    def jump_to_maze(self, dataset_name, maze_idx):
+        """The Bridge: Teleports user from Lab to Inspector outlier."""
+        # 1. Turn OFF sort so index 42 matches File Index 42
+        self.sort_checkbox.setChecked(False)
+        
+        # 2. Switch Dataset Dropdown
+        found_idx = self.dataset_selector.findText(dataset_name)
+        if found_idx >= 0:
+            self.dataset_selector.setCurrentIndex(found_idx)
+        
+        # 3. Set Slider directly
+        self.maze_slider.setValue(int(maze_idx))
+        
+        # 4. Force Switch to Workspace 0 (Inspector)
+        self.btn_inspector.setChecked(True)
+        self.on_workspace_changed(0)
 
     # ============================
     # DATA & LOGIC METHODS
@@ -463,7 +518,7 @@ class AliosWindow(QtWidgets.QWidget):
         self.update_display()
     
     def _refresh_rollout_caches(self):
-        """Silently pre-computes rollouts for all 1000 mazes to guarantee 0-lag sliders."""
+        """Silently pre-computes rollouts and generates the virtual sort map."""
         if self.current_mazes_jax is None: return
 
         # 1. Cache Left Agent
@@ -479,6 +534,22 @@ class AliosWindow(QtWidgets.QWidget):
             self.right_rollout_cache = {'steps': np.array(res_r[2]), 'success': np.array(res_r[4])}
         else:
             self.right_rollout_cache = None
+
+        # --- GENERATE THE RANKING MAP ---
+        if self.right_rollout_cache is not None and self.current_vi_values is not None:
+            agent_steps = self.right_rollout_cache['steps']
+            oracle_steps = np.abs(self.current_vi_values[:, 0, 0])
+            success_mask = self.right_rollout_cache['success']
+            
+            # Metric for sorting: Optimality Ratio. 
+            # If failed (loop), we give it a huge number (999) to put it at the very top.
+            gaps = np.where(success_mask, agent_steps / (oracle_steps + 1e-6), 999.0)
+            
+            # Sort indices: Argsort goes ascending, so we use [::-1] to put worst first
+            self.right_sort_map = np.argsort(gaps)[::-1]
+        else:
+            # Fallback to 1:1 mapping if no agent loaded
+            self.right_sort_map = np.arange(1000)
 
     def run_batch_test(self):
         # We run the batch test on whatever is loaded in the RIGHT panel
@@ -587,6 +658,11 @@ class AliosWindow(QtWidgets.QWidget):
                 
                 # Calculate Success Rate
                 success_rate = (np.sum(reached) / len(reached)) * 100
+
+                # --- NEW PHYSICS PROBE ---
+                pr_scores = core_logic.calculate_localization_batch(q_table, mazes_jax, map_func)
+                avg_pr = np.mean(pr_scores)
+                # -------------------------
                 
                 # Extract Obstacle Density from filename (e.g., P0100 -> 0.1)
                 try:
@@ -597,6 +673,7 @@ class AliosWindow(QtWidgets.QWidget):
                 # Store all raw data for the Dashboard to plot
                 master_results[(run_id, ds_name)] = {
                     'success': success_rate,
+                    'pr': avg_pr,
                     'density': density,
                     'reached_mask': reached,
                     'steps': steps,
@@ -604,8 +681,11 @@ class AliosWindow(QtWidgets.QWidget):
                 }
 
         # --- THE MODULAR HANDOVER ---
-        # Simply tell the dashboard: "Here is the data, go draw the 4 lenses."
-        self.plot_container.update_dashboard(master_results, selected_runs, selected_datasets)
+        # 1. Save data to Cache
+        self.plot_container.set_data_cache(master_results, selected_runs, selected_datasets)
+        
+        # 2. Trigger the UI to draw whatever is currently checked
+        self.on_lens_toggled(None)
         
         self.btn_run_benchmarks.setText("RUN AGENT COMPARISON")
         self.btn_run_benchmarks.setEnabled(True)
@@ -729,6 +809,19 @@ class AliosWindow(QtWidgets.QWidget):
         idx = self.maze_slider.value()
         if self.current_mazes is None:
             return
+        
+        # --- THE TRANSLATION BRIDGE ---
+        slider_val = self.maze_slider.value()
+        
+        # If sort is checked, 'idx' becomes the mapped rank. 
+        # Otherwise, 'idx' is just the slider number.
+        if self.sort_checkbox.isChecked() and hasattr(self, 'right_sort_map'):
+            idx = int(self.right_sort_map[slider_val])
+            self.maze_label.setText(f"Rank: {slider_val} (Maze #{idx})")
+        else:
+            idx = slider_val
+            self.maze_label.setText(f"Maze Index: {idx}")
+        # -------------------------------
         
         maze = self.current_mazes[idx]
         maze_jax = self.current_mazes_jax[idx]

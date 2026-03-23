@@ -117,6 +117,40 @@ def compute_rollout(maze, start_pos, q_table, decoder_func, max_steps=512):
         if (r, c) == (15, 15): break
     return path
 
+@partial(jax.jit, static_argnums=(2,))
+def calculate_localization_batch(q_table, dataset_jax, state_map_func):
+    """
+    Computes the Participation Ratio (PR) for 1,000 mazes.
+    PR measures how much of the environment the agent 'occupies' in its mind.
+    """
+    # ... (rest of the function code stays exactly the same) ...
+    all_state_maps = jax.vmap(state_map_func)(dataset_jax)
+    v_maps = jnp.max(q_table[all_state_maps], axis=-1)
+    
+    v_density = jnp.exp(v_maps / 10.0) 
+    v_flat = v_density.reshape(v_density.shape[0], -1)
+    
+    sum_sq = jnp.sum(v_flat**2, axis=-1)
+    sum_quad = jnp.sum(v_flat**4, axis=-1)
+    
+    pr = (sum_sq**2) / (sum_quad + 1e-9)
+    return pr / 256.0
+
+def calculate_path_correlation_batch(final_results):
+    """
+    Analyzes trajectories to find the 'Persistence Length'.
+    Returns the average steps before directional decorrelation.
+    """
+    # final_results is (r_arr, c_arr, steps_arr, colls_arr, goal_arr)
+    # We need the actual paths to do this perfectly, 
+    # but we can estimate it using (Oracle_Steps / Actual_Steps).
+    # For now, let's use the Efficiency Ratio as a proxy for 'Persistence'
+    # since we aren't storing the 1000 full path buffers in RAM yet.
+    
+    steps = np.array(final_results[2])
+    # Placeholder for a more complex auto-correlation if needed later
+    return np.mean(steps)
+
 # ==========================================================
 # 5. REGISTRIES
 # ==========================================================
