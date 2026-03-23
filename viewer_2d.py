@@ -122,9 +122,9 @@ class MazeView(pg.PlotWidget):
         # --- NEW: PROBE STATE VARIABLES ---
         self.current_state_map = None
         self.highlight_boxes =[]
-        
-        # Connect Mouse Click Event
-        self.scene().sigMouseClicked.connect(self.on_mouse_click)
+
+        self.last_clicked_pos = None 
+
 
 
     def set_maze(self, maze_data):
@@ -212,20 +212,18 @@ class MazeView(pg.PlotWidget):
             c, r = int(np.floor(pos.x() + 0.5)), int(np.floor(pos.y() + 0.5))
             c, r = np.clip(c, 0, 15), np.clip(r, 0, 15)
 
+            if (r, c) == self.last_clicked_pos:
+                self.clear_highlights()
+                self.cellClicked.emit(-1, -1, -1, 0)
+                return
+
             if self.maze_data is not None and self.maze_data[r, c] == 1: return
 
             if self.current_state_map is not None:
+                self.last_clicked_pos = (r, c)
                 state_id = int(self.current_state_map[r, c])
-                
-                # --- NEW: Decide color based on which panel was clicked ---
-                # Oracle/VI panel -> Light Blue. Agent panel -> Gold.
-                if "VI" in self.default_title or "Oracle" in self.default_title:
-                    local_color = [0, 191, 255, 120] # Light Blue
-                else:
-                    local_color = [255, 215, 0, 120] # Gold
-                
-                count = self.highlight_aliased_states(state_id, color_rgba=local_color)
-                self.cellClicked.emit(r, c, state_id, count)
+                aliased_coords = np.argwhere(self.current_state_map == state_id)
+                self.cellClicked.emit(r, c, state_id, len(aliased_coords))
                 
     def set_heatmap(self, maze_data, value_data):
         self.clear_highlights()

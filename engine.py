@@ -4,6 +4,7 @@ import numpy as np
 import jax.numpy as jnp
 import pyqtgraph as pg
 from PyQt5 import QtWidgets, QtCore, QtGui
+from analytics_view import AnalyticsDashboard
 
 # Local Imports
 from viewer_2d import MazeView
@@ -278,7 +279,6 @@ class AliosWindow(QtWidgets.QWidget):
         self.workspaces.addWidget(self.inspector_page) # Index 0
 
         # --- WORKSPACE 2: ANALYTICS LAB ---
-        # --- WORKSPACE 2: ANALYTICS LAB ---
         self.analytics_page = QtWidgets.QWidget()
         analytics_main_layout = QtWidgets.QHBoxLayout(self.analytics_page)
         self.analytics_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -288,7 +288,7 @@ class AliosWindow(QtWidgets.QWidget):
         self.lab_sidebar.setMinimumWidth(300)
         lab_sidebar_layout = QtWidgets.QVBoxLayout(self.lab_sidebar)
 
-        # --- Multi-Agent Selection ---
+        # Multi-Agent Selection
         self.agent_list_group = QtWidgets.QGroupBox("Select Agents to Benchmark")
         agent_list_layout = QtWidgets.QVBoxLayout(self.agent_list_group)
         self.agent_list_widget = QtWidgets.QListWidget()
@@ -296,7 +296,7 @@ class AliosWindow(QtWidgets.QWidget):
         agent_list_layout.addWidget(self.agent_list_widget)
         lab_sidebar_layout.addWidget(self.agent_list_group)
 
-        # --- NEW: ADD THE DATASET LIST WIDGET HERE ---
+        # Multi-Dataset Selection
         self.lab_dataset_group = QtWidgets.QGroupBox("Select Datasets to Test")
         lab_dataset_layout = QtWidgets.QVBoxLayout(self.lab_dataset_group)
         self.dataset_list_widget = QtWidgets.QListWidget()
@@ -304,36 +304,22 @@ class AliosWindow(QtWidgets.QWidget):
         lab_dataset_layout.addWidget(self.dataset_list_widget)
         lab_sidebar_layout.addWidget(self.lab_dataset_group)
 
-        # --- Execution ---
+        # Execution Button
         self.btn_run_benchmarks = QtWidgets.QPushButton("RUN AGENT COMPARISON")
         self.btn_run_benchmarks.setMinimumHeight(50)
         self.btn_run_benchmarks.setStyleSheet("background-color: #00BFFF; color: black; font-weight: bold; border-radius: 5px;")
         lab_sidebar_layout.addWidget(self.btn_run_benchmarks)
         lab_sidebar_layout.addStretch()
 
-        # 2. Lab Plotting Area (Right)
-        self.plot_container = pg.GraphicsLayoutWidget()
-        self.plot_container.setBackground('#121212')
-        
-        # Row 1
-        self.plot_outcome = self.plot_container.addPlot(title="Outcome Profile (Success/Loop/Crash)")
-        self.plot_scatter = self.plot_container.addPlot(title="Optimality Scatter (Oracle vs Agent)")
-        self.plot_container.nextRow()
-        
-        # Row 2
-        self.plot_dist = self.plot_container.addPlot(title="Path Efficiency Distribution")
-        self.plot_entropy_corr = self.plot_container.addPlot(title="Entropy vs. Success Correlation")
+        # 2. THE FIX: Create the Dashboard object FIRST
+        self.plot_container = AnalyticsDashboard() 
 
-        # Style them
-        for p in [self.plot_outcome, self.plot_scatter, self.plot_dist, self.plot_entropy_corr]:
-            p.showGrid(x=True, y=True, alpha=0.3)
-
-        # Assemble Lab Page
+        # 3. Assemble: Add items to splitter in order
         self.analytics_splitter.addWidget(self.lab_sidebar)
-        self.analytics_splitter.addWidget(self.plot_container)
+        self.analytics_splitter.addWidget(self.plot_container) # Now this exists!
         self.analytics_splitter.setSizes([300, 1100])
-        analytics_main_layout.addWidget(self.analytics_splitter)
         
+        analytics_main_layout.addWidget(self.analytics_splitter)
         self.workspaces.addWidget(self.analytics_page) # Index 1
 
     def connect_signals(self):
@@ -547,160 +533,82 @@ class AliosWindow(QtWidgets.QWidget):
 
     def execute_benchmarks(self):
         """Orchestrates the (Agents x Datasets) statistical experiment."""
-        # 1. Gather Checked Agents
+        # 1. Gather Selected Agents from the list checkboxes
         selected_runs = [self.agent_list_widget.item(i).text() 
                          for i in range(self.agent_list_widget.count()) 
                          if self.agent_list_widget.item(i).checkState() == QtCore.Qt.Checked]
         
-        # 2. Gather Checked Datasets
+        # 2. Gather Selected Datasets from the list checkboxes
         selected_datasets = [self.dataset_list_widget.item(i).text() 
                              for i in range(self.dataset_list_widget.count()) 
                              if self.dataset_list_widget.item(i).checkState() == QtCore.Qt.Checked]
 
         if not selected_runs or not selected_datasets:
-            print("Warning: Select at least one agent and one dataset.")
+            self.stats_display.setText("<b style='color:red;'>Error:</b> Select at least one agent and one dataset.")
             return
 
-        self.btn_run_benchmarks.setText("Benchmarking...")
+        # UI Feedback to show work is happening
+        self.btn_run_benchmarks.setText("Processing Experiment...")
         self.btn_run_benchmarks.setEnabled(False)
         QtWidgets.QApplication.processEvents()
 
         master_results = {}
 
+        # 3. The Grand Loop: Datasets x Agents
         for ds_name in selected_datasets:
-            # Load Dataset and Oracle start values for this dataset
+            # Load Dataset and Oracle for this specific file
             ds_path = os.path.join("data_jax", ds_name)
             mazes_jax = jnp.array(np.load(ds_path))
             
+            # Fetch Oracle for steps comparison
             vi_filename = ds_name.replace(".npy", "_VI_solved.npz")
             vi_path = os.path.join("data_jax", "value_iteration", vi_filename)
             oracle_v_start = None
             if os.path.exists(vi_path):
                 with np.load(vi_path) as vi_data:
+                    # Value at (0,0) is negative path length
                     oracle_v_start = np.abs(vi_data['values'][:, 0, 0])
 
             for run_id in selected_runs:
                 details = db_manager.get_run_details(run_id)
+                if not details: continue
+                
+                # Load Agent Data
                 q_table = jnp.array(np.load(details['path']))
                 r_key = details['state_repr']
                 
-                # Get map function for this agent
+                # Use RAW mapper for JAX Batch Evaluation
                 map_func = core_logic.STATE_MAP_FUNCS_RAW.get(r_key, core_logic.STATE_MAP_FUNCS_RAW['mdp'])
 
-                # Parallel rollout over 1,000 mazes
+                # Run High-Speed JAX Evaluation
                 res = core_logic.evaluate_dataset(q_table, mazes_jax, map_func)
-                
                 reached = np.array(res[4])
                 steps = np.array(res[2])
                 
                 # Calculate Success Rate
                 success_rate = (np.sum(reached) / len(reached)) * 100
                 
-                # Calculate Optimality Gap
-                gap = 1.0
-                if np.any(reached) and oracle_v_start is not None:
-                    gap = np.mean(steps[reached]) / np.mean(oracle_v_start[reached])
-
-                # Extract Density (P value) from filename for the X-axis
+                # Extract Obstacle Density from filename (e.g., P0100 -> 0.1)
                 try:
-                    density_str = ds_name.split('_P')[1].split('_')[0]
-                    density = float(density_str) / 1000.0
+                    density = float(ds_name.split('_P')[1].split('_')[0]) / 1000.0
                 except:
                     density = 0.0
 
+                # Store all raw data for the Dashboard to plot
                 master_results[(run_id, ds_name)] = {
                     'success': success_rate,
-                    'gap': gap,
                     'density': density,
                     'reached_mask': reached,
                     'steps': steps,
                     'oracle_steps': oracle_v_start
                 }
 
-        # 3. Draw the 4-Lens Scientific Plots
-        self.draw_research_plots(master_results, selected_runs, selected_datasets)
+        # --- THE MODULAR HANDOVER ---
+        # Simply tell the dashboard: "Here is the data, go draw the 4 lenses."
+        self.plot_container.update_dashboard(master_results, selected_runs, selected_datasets)
         
         self.btn_run_benchmarks.setText("RUN AGENT COMPARISON")
         self.btn_run_benchmarks.setEnabled(True)
-
-    def draw_research_plots(self, results, run_ids, ds_names):
-        # Clear the 4 plots we defined in the 2x2 grid
-        self.plot_outcome.clear()
-        self.plot_scatter.clear()
-        self.plot_dist.clear()
-        self.plot_entropy_corr.clear()
-
-        # --- LENS 1: PHASE TRANSITION (Success vs. Density) ---
-        self.plot_outcome.setTitle("Percolation Phase Transition: Success vs Density")
-        self.plot_outcome.addLegend()
-        
-        for run_id in run_ids:
-            # Sort by density for a clean line plot
-            agent_data = [results[(run_id, ds)] for ds in ds_names]
-            agent_data.sort(key=lambda x: x['density'])
-            
-            densities = [d['density'] for d in agent_data]
-            successes = [d['success'] for d in agent_data]
-            
-            # Plot the trend line
-            color = pg.intColor(run_ids.index(run_id))
-            self.plot_outcome.plot(densities, successes, pen=pg.mkPen(color, width=2), 
-                                   symbol='o', name=run_id)
-        
-        # Add the theoretical PC vertical line
-        self.plot_outcome.addLine(x=0.592, pen=pg.mkPen('r', style=QtCore.Qt.DashLine))
-        self.plot_outcome.setLabel('bottom', 'Obstacle Density (p)')
-        self.plot_outcome.setLabel('left', 'Success Rate (%)')
-
-        # --- LENS 2: AGGREGATED OPTIMALITY SCATTER ---
-        self.plot_scatter.setTitle("Optimality Scatter (All Selected Datasets)")
-        for run_id in run_ids:
-            color = pg.intColor(run_ids.index(run_id), alpha=150)
-            for ds in ds_names:
-                d = results[(run_id, ds)]
-                if d['oracle_steps'] is not None:
-                    mask = d['reached_mask']
-                    self.plot_scatter.plot(d['oracle_steps'][mask], d['steps'][mask], 
-                                           pen=None, symbol='o', symbolSize=4, symbolBrush=color)
-        
-        self.plot_scatter.plot([0, 100], [0, 100], pen=pg.mkPen('w', style=QtCore.Qt.DashLine))
-        self.plot_scatter.setLabel('bottom', 'Oracle Steps')
-        self.plot_scatter.setLabel('left', 'Agent Steps')
-
-        # --- LENS 3: EFFICIENCY DISTRIBUTION (Histograms) ---
-        self.plot_dist.setTitle("Path Efficiency Distribution")
-        for run_id in run_ids:
-            color = pg.intColor(run_ids.index(run_id))
-            all_gaps = []
-            for ds in ds_names:
-                d = results[(run_id, ds)]
-                if d['oracle_steps'] is not None and np.any(d['reached_mask']):
-                    mask = d['reached_mask']
-                    all_gaps.extend(d['steps'][mask] / d['oracle_steps'][mask])
-            
-            if all_gaps:
-                y, x = np.histogram(all_gaps, bins=np.linspace(1, 5, 40))
-                self.plot_dist.plot(x, y, stepMode="center", fillLevel=0, 
-                                    fillBrush=(*color.getRgb()[:3], 50), pen=color)
-        self.plot_dist.setLabel('bottom', 'Efficiency Ratio (Steps / Oracle)')
-
-        # --- LENS 4: PLACEHOLDER FOR ENTROPY/CONFLICT ---
-        self.plot_entropy_corr.setTitle("Future: Entropy vs Failure Correlation")
-
-    def update_lab_plots(self, names, success_rates, gaps):
-        """Refreshes the bar charts in the Analytics Lab."""
-        self.success_plot.clear()
-        self.gap_plot.clear()
-        x = np.arange(len(names))
-        
-        bg_success = pg.BarGraphItem(x=x, height=success_rates, width=0.6, brush='#28A745')
-        self.success_plot.addItem(bg_success)
-        self.success_plot.getAxis('bottom').setTicks([list(enumerate(names))])
-        
-        bg_gap = pg.BarGraphItem(x=x, height=gaps, width=0.6, brush='#00BFFF')
-        self.gap_plot.addItem(bg_gap)
-        self.gap_plot.getAxis('bottom').setTicks([list(enumerate(names))])
-        self.gap_plot.addLine(y=1.0, pen=pg.mkPen('w', style=QtCore.Qt.DashLine))
 
     def update_neuro_probe(self, r, c, state_id, aliased_count):
         # If toggled off
@@ -712,7 +620,24 @@ class AliosWindow(QtWidgets.QWidget):
                 view.clear_trajectory()
             return
         
-        # --- BUG 1 FIX: SYNC THE STATE MAPS FOR HIGHLIGHTING ---
+        # Define Research Colors
+        color_oracle = [0, 191, 255, 120]  # Light Blue
+        color_agent  = [255, 215, 0, 120]  # Gold
+
+        # 3. Direct the Rendering (This is the modular part)
+        # Left Side
+        l_color = color_oracle if self.left_type == 'oracle' else color_agent
+        self.view_left_policy.highlight_aliased_states(state_id, l_color)
+        self.view_left_values.highlight_aliased_states(state_id, l_color)
+        self.view_left_entropy.highlight_aliased_states(state_id, l_color)
+
+        # Right Side
+        r_color = color_oracle if self.right_type == 'oracle' else color_agent
+        self.view_right_policy.highlight_aliased_states(state_id, r_color)
+        self.view_right_values.highlight_aliased_states(state_id, r_color)
+        self.view_right_entropy.highlight_aliased_states(state_id, r_color)
+        
+        # SYNC THE STATE MAPS FOR HIGHLIGHTING ---
         idx = self.maze_slider.value()
         maze_jax = self.current_mazes_jax[idx]
         
@@ -800,62 +725,64 @@ class AliosWindow(QtWidgets.QWidget):
             return actions, values, entropy, state_map
 
     def update_display(self):
+        """Symmetrical update logic for all panels using a configuration loop."""
         idx = self.maze_slider.value()
-        if self.current_mazes is None: return
+        if self.current_mazes is None:
+            return
         
         maze = self.current_mazes[idx]
         maze_jax = self.current_mazes_jax[idx]
+        
+        # Shortest path steps from Oracle (Value at 0,0 is -steps)
+        oracle_steps = int(abs(self.current_vi_values[idx, 0, 0])) if self.current_vi_values is not None else 0
 
-        for view in[self.view_left_policy, self.view_left_values, self.view_left_entropy,
-                     self.view_right_policy, self.view_right_values, self.view_right_entropy]:
-            view.set_maze(maze)
-
+        # 1. Fetch data for both sides using the helper
         L_act, L_val, L_ent, L_map = self._get_panel_data(self.left_type, self.left_q, self.left_decoder_jit, idx, maze_jax)
         R_act, R_val, R_ent, R_map = self._get_panel_data(self.right_type, self.right_q, self.right_decoder_jit, idx, maze_jax)
 
-        # 1. Draw Left Panel (Green arrows)
-        if L_act is not None:
-            self.view_left_policy.set_state_map(L_map)
-            self.view_left_values.set_state_map(L_map)
-            self.view_left_entropy.set_state_map(L_map)
+        # 2. Define the Panel Configurations
+        # Format: (SideName, Type, (Actions, Values, Entropy, StateMap), [Tabs], BaseColor, Cache)
+        panel_configs = [
+            ('Left', self.left_type, (L_act, L_val, L_ent, L_map), 
+             [self.view_left_policy, self.view_left_values, self.view_left_entropy], '#28A745', self.left_rollout_cache),
             
-            self.view_left_policy.draw_policy_vectorized(maze, L_act, base_color='#28A745')
-            self.view_left_values.set_heatmap(maze, L_val)
-            self.view_left_entropy.set_heatmap(maze, L_ent)
+            ('Right', self.right_type, (R_act, R_val, R_ent, R_map), 
+             [self.view_right_policy, self.view_right_values, self.view_right_entropy], '#00BFFF', self.right_rollout_cache)
+        ]
 
-        # 2. Draw Right Panel (Blue arrows, Red if diverges from Left)
-        if R_act is not None:
-            self.view_right_policy.set_state_map(R_map)
-            self.view_right_values.set_state_map(R_map)
-            self.view_right_entropy.set_state_map(R_map)
+        # 3. Loop through and update both panels
+        for name, p_type, data, views, color, cache in panel_configs:
+            act, val, ent, smap = data
             
-            # Left actions act as the truth for divergence checking
-            self.view_right_policy.draw_policy_vectorized(maze, R_act, oracle_actions=L_act, base_color='#00BFFF')
-            self.view_right_values.set_heatmap(maze, R_val)
-            self.view_right_entropy.set_heatmap(maze, R_ent)
+            # Reset views and clear previous highlights
+            for v in views:
+                v.set_maze(maze)
+                # IMPORTANT: We give every view the state map for the probe
+                if smap is not None:
+                    v.set_state_map(smap)
+
+            # Draw the layers if data exists
+            if act is not None:
+                # DIVERGENCE: Right panel compares itself to Left Panel (L_act)
+                comparison_baseline = L_act if name == 'Right' else None
+                
+                views[0].draw_policy_vectorized(maze, act, oracle_actions=comparison_baseline, base_color=color)
+                views[1].set_heatmap(maze, val)
+                views[2].set_heatmap(maze, ent)
+
+            # 4. Update the titles (Scoreboard)
+            if p_type == 'oracle':
+                title = f"{name} Oracle: <span style='color:#00FF00;'>OPTIMAL</span> | Steps: {oracle_steps}"
+            elif cache is not None:
+                reached = cache['success'][idx]
+                steps = cache['steps'][idx]
+                status = "<span style='color:#00FF00;'>SUCCESS</span>" if reached else "<span style='color:#FF4500;'>FAILED</span>"
+                metric = f"Steps: {steps} (Oracle: {oracle_steps})" if reached else "Trapped in Loop"
+                title = f"{name} Agent: {status} | {metric}"
+            else:
+                title = f"{name} Panel"
             
-            # Scoreboard Logic
-            # --- NEW FAST SCOREBOARD LOGIC ---
-        oracle_steps = int(abs(self.current_vi_values[idx, 0, 0])) if self.current_vi_values is not None else 0
-
-        # Title for LEFT Panel
-        if self.left_type == 'oracle':
-            self.view_left_policy.setTitle(f"Left Oracle: <span style='color:#00FF00;'>OPTIMAL</span> | Steps: {oracle_steps}", size='11pt')
-        elif self.left_rollout_cache is not None:
-            l_reached = self.left_rollout_cache['success'][idx]
-            l_steps = self.left_rollout_cache['steps'][idx]
-            l_status = "<span style='color:#00FF00;'>SUCCESS</span>" if l_reached else "<span style='color:#FF4500;'>FAILED</span>"
-            l_metric = f"Steps: {l_steps} (Oracle: {oracle_steps})" if l_reached else "Trapped in Loop"
-            self.view_left_policy.setTitle(f"Left Agent: {l_status} | {l_metric}", size='11pt')
-
-        # Title for RIGHT Panel
-        if self.right_type == 'oracle':
-            self.current_maze_score = f"Right Oracle: <span style='color:#00FF00;'>OPTIMAL</span> | Steps: {oracle_steps}"
-            self.view_right_policy.setTitle(self.current_maze_score, size='11pt')
-        elif self.right_rollout_cache is not None:
-            r_reached = self.right_rollout_cache['success'][idx]
-            r_steps = self.right_rollout_cache['steps'][idx]
-            r_status = "<span style='color:#00FF00;'>SUCCESS</span>" if r_reached else "<span style='color:#FF4500;'>FAILED</span>"
-            r_metric = f"Steps: {r_steps} (Oracle: {oracle_steps})" if r_reached else "Trapped in Loop"
-            self.current_maze_score = f"Right Agent: {r_status} | {r_metric}"
-            self.view_right_policy.setTitle(self.current_maze_score, size='11pt')
+            views[0].setTitle(title, size='11pt')
+            # Save the right-side title so the Neuro-Probe can restore it later
+            if name == 'Right':
+                self.current_maze_score = title
