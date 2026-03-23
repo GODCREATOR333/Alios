@@ -48,17 +48,15 @@ def decode_pomdp_9bit_compass(maze, r, c):
 # 2. VECTORIZED STATE MAPPERS (JIT)
 # ==========================================================
 
-@jax.jit
+
 def get_full_state_map_mdp(maze):
     r, c = jnp.indices((16, 16))
     return decode_mdp(maze, r, c)
 
-@jax.jit
 def get_full_state_map_pomdp(maze):
     r_idx, c_idx = jnp.indices((16, 16))
     return jax.vmap(jax.vmap(decode_pomdp_3x3_base3, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(maze, r_idx, c_idx)
 
-@jax.jit
 def get_full_state_map_pomdp_9bit_compass(maze):
     r_idx, c_idx = jnp.indices((16, 16))
     return jax.vmap(jax.vmap(decode_pomdp_9bit_compass, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(maze, r_idx, c_idx)
@@ -129,16 +127,16 @@ DECODERS = {
     "pomdp_9bit_compass": decode_pomdp_9bit_compass
 }
 
+# The RAW dictionary stores the pure, uncompiled Python functions for the Batch Evaluator
 STATE_MAP_FUNCS_RAW = {
     "mdp": get_full_state_map_mdp,
     "3x3_base3_compass": get_full_state_map_pomdp,
-    "pomdp_9bit_compass": decode_pomdp_9bit_compass
-    
+    "pomdp_9bit_compass": get_full_state_map_pomdp_9bit_compass 
 }
 
+# The JIT dictionary compiles them on-the-fly for the lightning-fast UI Slider
 STATE_MAP_FUNCS_JIT = {
-    "mdp": get_full_state_map_mdp, # Already jitted above
-    "3x3_base3_compass": get_full_state_map_pomdp,
-    "pomdp_9bit_compass": get_full_state_map_pomdp_9bit_compass
-
+    "mdp": jax.jit(get_full_state_map_mdp), 
+    "3x3_base3_compass": jax.jit(get_full_state_map_pomdp),
+    "pomdp_9bit_compass": jax.jit(get_full_state_map_pomdp_9bit_compass)
 }

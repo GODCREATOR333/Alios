@@ -19,12 +19,26 @@ class AliosWindow(QtWidgets.QWidget):
         self.resize(1400, 900)
 
         # --- 2. Data State (The Internal 'Backpack') ---
-        self.current_mazes = None          # Raw .npy maze dataset
-        self.current_vi_policies = None    # The Oracle baseline
-        self.current_agent_q = None        # The Loaded Q-table/Policy
-        self.current_decoder = None        # Function to map (r,c) -> State ID
-        self.current_config = None         # JSON metadata for the run
+        self.current_mazes = None          
+        self.current_mazes_jax = None
+        self.current_vi_policies = None    
         self.current_vi_values = None
+        self.current_maze_score = ""
+
+        # --- NEW: Symmetrical Panel States ---
+        self.left_type = 'oracle'  # 'oracle' or 'agent'
+        self.left_q = None
+        self.left_decoder = None
+        self.left_decoder_jit = None
+        self.left_decoder_raw = None 
+        self.left_rollout_cache = None
+
+        self.right_type = 'agent'
+        self.right_q = None
+        self.right_decoder = None
+        self.right_decoder_jit = None
+        self.right_decoder_raw = None 
+        self.right_rollout_cache = None 
 
         # --- 3. Initialize UI & Connections ---
         self.init_ui()
@@ -34,42 +48,28 @@ class AliosWindow(QtWidgets.QWidget):
         self.refresh_runs()
         self.scan_datasets()
 
-        # --- 5.Track two more Q-tables and two more decoders in the "Backpack.
-        self.agent_a_q = None
-        self.agent_b_q = None
-        self.decoder_a = None
-        self.decoder_b = None
-
     def init_ui(self):
         """Builds the layout and widgets (Modular approach)."""
-
-        
-        # Change 1: Use Vertical Layout for the whole window
         self.main_container = QtWidgets.QVBoxLayout(self)
         self.main_container.setContentsMargins(0, 0, 0, 0)
         self.main_container.setSpacing(0)
 
-        # Change 2: Create the Header Bar
+        # --- 1. WORKSPACE SWITCHER HEADER ---
         self.header = QtWidgets.QWidget()
         self.header.setFixedHeight(50)
         self.header.setStyleSheet("background-color: #1a1a1a; border-bottom: 1px solid #333;")
         header_layout = QtWidgets.QHBoxLayout(self.header)
         
-        # Change 3: Create Workspace Buttons
         self.btn_inspector = QtWidgets.QPushButton("DEEP INSPECTOR")
-        self.btn_arena = QtWidgets.QPushButton("POLICY ARENA")
         self.btn_analytics = QtWidgets.QPushButton("ANALYTICS LAB")
         
         btn_style = """
-            QPushButton { 
-                background-color: transparent; color: #888; font-weight: bold; 
-                padding: 10px 20px; border: None; font-size: 10pt;
-            }
+            QPushButton { background-color: transparent; color: #888; font-weight: bold; padding: 10px 20px; border: None; font-size: 10pt; }
             QPushButton:checked { color: #00BFFF; border-bottom: 2px solid #00BFFF; }
             QPushButton:hover { color: #DDD; }
         """
         self.workspace_group = QtWidgets.QButtonGroup(self)
-        for i, btn in enumerate([self.btn_inspector, self.btn_arena, self.btn_analytics]):
+        for i, btn in enumerate([self.btn_inspector, self.btn_analytics]):
             btn.setStyleSheet(btn_style)
             btn.setCheckable(True)
             header_layout.addWidget(btn)
@@ -79,17 +79,14 @@ class AliosWindow(QtWidgets.QWidget):
         header_layout.addStretch()
         self.main_container.addWidget(self.header)
 
-        # Change 4: Create the Stacked Widget (The Content Area)
+        # --- 2. STACKED WORKSPACE CONTAINER ---
         self.workspaces = QtWidgets.QStackedWidget()
         self.main_container.addWidget(self.workspaces)
 
-        # --- WORKSPACE 1: DEEP INSPECTOR (Existing Logic) ---
+        # --- WORKSPACE 1: DEEP INSPECTOR ---
         self.inspector_page = QtWidgets.QWidget()
         self.inspector_layout = QtWidgets.QHBoxLayout(self.inspector_page)
-        
-        # From here, use your EXISTING code to build the sidebar and splitter
         self.splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        # ... [Paste all your existing Sidebar & Viewer Splitter logic here] ...
 
         # ============================
         # SIDEBAR (LEFT)
@@ -98,14 +95,17 @@ class AliosWindow(QtWidgets.QWidget):
         self.sidebar_layout = QtWidgets.QVBoxLayout(self.sidebar)
         self.sidebar.setMinimumWidth(300)
 
-        # --- Run/Artifact Selection ---
-        self.run_group = QtWidgets.QGroupBox("Artifact Registry (Runs)")
-        run_layout = QtWidgets.QVBoxLayout(self.run_group)
-        self.run_selector = QtWidgets.QComboBox()
+        # --- NEW: Symmetrical Source Selection ---
+        self.source_group = QtWidgets.QGroupBox("Panel Sources")
+        source_layout = QtWidgets.QFormLayout(self.source_group)
+        self.left_selector = QtWidgets.QComboBox()
+        self.right_selector = QtWidgets.QComboBox()
         self.refresh_runs_btn = QtWidgets.QPushButton("Refresh Database")
-        run_layout.addWidget(self.run_selector)
-        run_layout.addWidget(self.refresh_runs_btn)
-        self.sidebar_layout.addWidget(self.run_group)
+        
+        source_layout.addRow("Left Panel:", self.left_selector)
+        source_layout.addRow("Right Panel:", self.right_selector)
+        source_layout.addRow("", self.refresh_runs_btn)
+        self.sidebar_layout.addWidget(self.source_group)
 
         # --- Dataset Selection ---
         self.data_group = QtWidgets.QGroupBox("Test Dataset")
@@ -117,17 +117,14 @@ class AliosWindow(QtWidgets.QWidget):
         # --- Maze Navigation (Slider + Number Box) ---
         self.maze_group = QtWidgets.QGroupBox("Maze Navigator")
         maze_nav_layout = QtWidgets.QVBoxLayout(self.maze_group)
-        
         top_nav_layout = QtWidgets.QHBoxLayout()
-        self.maze_label = QtWidgets.QLabel("Maze Index:")
         
+        self.maze_label = QtWidgets.QLabel("Maze Index:")
         self.maze_spinbox = QtWidgets.QSpinBox()
         self.maze_spinbox.setRange(0, 999)
         self.maze_spinbox.setFixedWidth(60)
-        
-        # --- THE FIX: Hide the black up/down UI arrows ---
         self.maze_spinbox.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-        self.maze_spinbox.setAlignment(QtCore.Qt.AlignCenter) # Center the number
+        self.maze_spinbox.setAlignment(QtCore.Qt.AlignCenter)
                     
         top_nav_layout.addWidget(self.maze_label)
         top_nav_layout.addSpacing(5)
@@ -136,103 +133,39 @@ class AliosWindow(QtWidgets.QWidget):
         
         self.maze_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.maze_slider.setRange(0, 999)
-        self.maze_spinbox.setStyleSheet("""
-                QSpinBox {
-                    padding: 4px;
-                    border-radius: 6px;
-                    border: 1px solid #444;
-                    background-color: #1e1e1e;
-                    color: #ddd;
-                }
-            """)
         
+        self.maze_spinbox.setStyleSheet("QSpinBox { padding: 4px; border-radius: 6px; border: 1px solid #444; background-color: #1e1e1e; color: #ddd; }")
         self.maze_slider.setStyleSheet("""
-                QSlider::groove:horizontal {
-                    height: 6px;
-                    background: #2a2a2a;
-                    border-radius: 3px;
-                }
-
-                QSlider::handle:horizontal {
-                    background: #00BFFF;
-                    width: 14px;
-                    height: 14px;
-                    margin: -5px 0;
-                    border-radius: 7px;
-                }
-
-                QSlider::sub-page:horizontal {
-                    background: #00BFFF;
-                    border-radius: 3px;
-                }
-            """)
-        
-        self.maze_group.setStyleSheet("""
-                QGroupBox {
-                    font-weight: bold;
-                    border: 1px solid #333;
-                    border-radius: 8px;
-                    margin-top: 10px;
-                    padding: 8px;
-                }
-
-                QGroupBox::title {
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 3px;
-                }
-            """)
-        
-        self.maze_slider.setToolTip("Scroll through maze samples")
-        self.maze_spinbox.setToolTip("Enter maze index")
-        maze_nav_layout.setContentsMargins(10, 12, 10, 12)
-        maze_nav_layout.setSpacing(10)
-        top_nav_layout.setSpacing(8)
-
-        # Use setTracking(False) if you want it to ONLY update when you release the mouse, 
-        # but we'll keep it True and optimize the loop instead.
+            QSlider::groove:horizontal { height: 6px; background: #2a2a2a; border-radius: 3px; }
+            QSlider::handle:horizontal { background: #00BFFF; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }
+            QSlider::sub-page:horizontal { background: #00BFFF; border-radius: 3px; }
+        """)
+        self.maze_group.setStyleSheet("QGroupBox { font-weight: bold; border: 1px solid #333; border-radius: 8px; margin-top: 10px; padding: 8px; } QGroupBox::title { left: 10px; padding: 0 3px; }")
         
         maze_nav_layout.addLayout(top_nav_layout)
         maze_nav_layout.addWidget(self.maze_slider)
         self.sidebar_layout.addWidget(self.maze_group)
 
-
         # --- Stats Group ---
         self.stats_group = QtWidgets.QGroupBox("Statistical Performance Profile")
         stats_layout = QtWidgets.QVBoxLayout(self.stats_group)
-        
-        self.run_test_btn = QtWidgets.QPushButton("Run Batch Test (1000 Mazes)")
+        self.run_test_btn = QtWidgets.QPushButton("Run Batch Test on Right Panel")
         self.run_test_btn.setMinimumHeight(40)
         self.run_test_btn.setStyleSheet("background-color: #28A745; color: white; font-weight: bold; border-radius: 5px;")
         
         self.stats_display = QtWidgets.QLabel("Select a dataset and run test...")
-        self.stats_display.setStyleSheet("""
-            font-family: 'Courier New'; 
-            font-size: 10pt; 
-            color: #00FF00; 
-            background-color: #000; 
-            padding: 8px;
-        """)
+        self.stats_display.setStyleSheet("font-family: 'Courier New'; font-size: 10pt; color: #00FF00; background-color: #000; padding: 8px;")
         
         stats_layout.addWidget(self.run_test_btn)
         stats_layout.addWidget(self.stats_display)
         self.sidebar_layout.insertWidget(2, self.stats_group)
 
-
         # --- Micro-Inspector (Neuro-Probe) ---
         self.inspect_group = QtWidgets.QGroupBox("Neuro-Probe: Q-Values")
         inspect_layout = QtWidgets.QVBoxLayout(self.inspect_group)
         
-        # Replace PlotWidget with a rich-text QLabel
-        self.neuro_label = QtWidgets.QLabel("Click on any cell in the Agent View to probe its internal state.")
-        self.neuro_label.setStyleSheet("""
-            font-family: 'Courier New', monospace; 
-            font-size: 11pt; 
-            color: #00BFFF;
-            background-color: #1e1e1e;
-            padding: 10px;
-            border-radius: 5px;
-        """)
+        self.neuro_label = QtWidgets.QLabel("Click on any cell to probe its internal state.")
+        self.neuro_label.setStyleSheet("font-family: 'Courier New', monospace; font-size: 11pt; color: #00BFFF; background-color: #1e1e1e; padding: 10px; border-radius: 5px;")
         self.neuro_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
         
         inspect_layout.addWidget(self.neuro_label)
@@ -241,11 +174,10 @@ class AliosWindow(QtWidgets.QWidget):
         # --- Probes Info Legend ---
         self.probes_help = QtWidgets.QGroupBox("Probes Guide")
         help_layout = QtWidgets.QVBoxLayout(self.probes_help)
-        self.probes_help.setStyleSheet("QGroupBox { color: #FFD700; }") # Gold title
-        
+        self.probes_help.setStyleSheet("QGroupBox { color: #FFD700; }")
         help_text = QtWidgets.QLabel(
             "<b>• CLICK:</b> Run Micro-Probe on cell.<br>"
-            "<b>• YELLOW BOX:</b> Aliased states (Confusion).<br>"
+            "<b>• YELLOW/BLUE BOX:</b> Aliased states.<br>"
             "<b>• CONFLICT:</b> Mathematical solvability.<br>"
             "<b>• ENTROPY:</b> Policy uncertainty (Ties).<br>"
             "<b>• PATH:</b> Visualizes Limit Cycles (Loops)."
@@ -254,62 +186,52 @@ class AliosWindow(QtWidgets.QWidget):
         help_layout.addWidget(help_text)
         self.sidebar_layout.addWidget(self.probes_help)
 
-
         # --- Config/Metadata Inspector ---
-        self.config_group = QtWidgets.QGroupBox("Run Configuration (JSON)")
+        self.config_group = QtWidgets.QGroupBox("Right Panel Configuration (JSON)")
         config_layout = QtWidgets.QVBoxLayout(self.config_group)
         self.config_display = QtWidgets.QTextEdit()
         self.config_display.setReadOnly(True)
-        self.config_display.setStyleSheet("""
-            background-color: #1e1e1e; 
-            color: #d4d4d4; 
-            font-family: 'Courier New'; 
-            font-size: 10pt;
-        """)
+        self.config_display.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4; font-family: 'Courier New'; font-size: 10pt;")
         config_layout.addWidget(self.config_display)
         self.sidebar_layout.addWidget(self.config_group)
 
         self.sidebar_layout.addStretch()
 
         # ============================
-        # VIEWER PANELS (RIGHT)
+        # VIEWER PANELS (RIGHT SIDE OF SPLITTER)
         # ============================
         self.viewer_widget = QtWidgets.QWidget()
         self.viewer_layout = QtWidgets.QHBoxLayout(self.viewer_widget)
         self.viewer_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
 
-        # --- NEW: Oracle Tab Container ---
-        self.oracle_tabs = QtWidgets.QTabWidget()
-        self.oracle_tabs.setStyleSheet("""
+        tab_css = """
             QTabWidget::pane { border: 1px solid #333; top: -1px; background: #121212; }
             QTabBar::tab { background: #2a2a2a; color: #aaa; padding: 8px 20px; border-top-left-radius: 4px; border-top-right-radius: 4px; }
             QTabBar::tab:selected { background: #121212; color: #00BFFF; border: 1px solid #333; border-bottom: none; }
-        """)
+        """
 
-        # Tab 1: Policy View (Reuse your MazeView)
-        self.view_oracle_policy = MazeView(title="VI: Optimal Policy")
-        
-        # Tab 2: Value View (Heatmap)
-        self.view_oracle_values = MazeView(title="VI: State Values (V*)")
-        
-        self.oracle_tabs.addTab(self.view_oracle_policy, "Policy (π*)")
-        self.oracle_tabs.addTab(self.view_oracle_values, "Value Heatmap (V*)")
+        # --- LEFT TABS ---
+        self.left_tabs = QtWidgets.QTabWidget()
+        self.left_tabs.setStyleSheet(tab_css)
+        self.view_left_policy = MazeView(title="Left: Policy (π)")
+        self.view_left_values = MazeView(title="Left: Values (V)")
+        self.view_left_entropy = MazeView(title="Left: Entropy (H)")
+        self.left_tabs.addTab(self.view_left_policy, "Policy (π)")
+        self.left_tabs.addTab(self.view_left_values, "Value (V)")
+        self.left_tabs.addTab(self.view_left_entropy, "Entropy (H)")
 
-        # --- NEW: Agent Tab Container ---
-        self.agent_tabs = QtWidgets.QTabWidget()
-        self.agent_tabs.setStyleSheet(self.oracle_tabs.styleSheet()) # Reuse the exact same CSS!
+        # --- RIGHT TABS ---
+        self.right_tabs = QtWidgets.QTabWidget()
+        self.right_tabs.setStyleSheet(tab_css)
+        self.view_right_policy = MazeView(title="Right: Policy (π)")
+        self.view_right_values = MazeView(title="Right: Values (V)")
+        self.view_right_entropy = MazeView(title="Right: Entropy (H)")
+        self.right_tabs.addTab(self.view_right_policy, "Policy (π)")
+        self.right_tabs.addTab(self.view_right_values, "Value (V)")
+        self.right_tabs.addTab(self.view_right_entropy, "Entropy (H)")
 
-        self.view_agent_policy = MazeView(title="Agent: Learned Policy")
-        self.view_agent_values = MazeView(title="Agent: Perceived Values (max Q)")
-        self.view_agent_entropy = MazeView(title="Agent: Policy Entropy (Confusion)")
-        
-        self.agent_tabs.addTab(self.view_agent_policy, "Policy (π)")
-        self.agent_tabs.addTab(self.view_agent_values, "Value Heatmap (max Q)")
-        self.agent_tabs.addTab(self.view_agent_entropy, "Entropy (H)")
-        
-        # Add both Tab Containers to the Splitter
-        self.viewer_splitter.addWidget(self.oracle_tabs)
-        self.viewer_splitter.addWidget(self.agent_tabs)
+        self.viewer_splitter.addWidget(self.left_tabs)
+        self.viewer_splitter.addWidget(self.right_tabs)
         self.viewer_splitter.setSizes([800, 800])
 
         self.viewer_layout.addWidget(self.viewer_splitter)
@@ -320,118 +242,37 @@ class AliosWindow(QtWidgets.QWidget):
         self.splitter.setSizes([300, 1100])
         self.inspector_layout.addWidget(self.splitter)
 
+        self.workspaces.addWidget(self.inspector_page) # Index 0
 
-        # Agent View (Stays the same)
-        self.view_agent = MazeView(title="Agent Policy (Hypothesis)")
-
-
-        # Finalize Workspace 1
-        self.inspector_layout.addWidget(self.splitter)
-        self.workspaces.addWidget(self.inspector_page)
-
-
-
-        # --- WORKSPACE 2 & 3: PLACEHOLDERS ---
-        self.arena_page = QtWidgets.QLabel("Arena Mode: Compare Agent vs Agent")
-        self.arena_page.setStyleSheet("color: #555; font-size: 20pt;")
-        self.arena_page.setAlignment(QtCore.Qt.AlignCenter)
-        self.workspaces.addWidget(self.arena_page)
-
-        self.analytics_page = QtWidgets.QLabel("Analytics Lab: Statistical Benchmarking")
+        # --- WORKSPACE 2: ANALYTICS LAB ---
+        self.analytics_page = QtWidgets.QLabel("Analytics Lab: Global Statistical Benchmarking\n(Coming Soon)")
         self.analytics_page.setStyleSheet("color: #555; font-size: 20pt;")
         self.analytics_page.setAlignment(QtCore.Qt.AlignCenter)
-        self.workspaces.addWidget(self.analytics_page)
-
-        # --- WORKSPACE 2: POLICY ARENA ---
-        self.arena_page = QtWidgets.QWidget()
-        arena_layout = QtWidgets.QVBoxLayout(self.arena_page)
-
-        # 1. Arena Header (Run Selectors)
-        arena_controls = QtWidgets.QGroupBox("Combatant Selection")
-        arena_controls_layout = QtWidgets.QHBoxLayout(arena_controls)
-        
-        self.run_a_selector = QtWidgets.QComboBox()
-        self.run_b_selector = QtWidgets.QComboBox()
-        arena_controls_layout.addWidget(QtWidgets.QLabel("Agent A:"))
-        arena_controls_layout.addWidget(self.run_a_selector)
-        arena_controls_layout.addSpacing(20)
-        arena_controls_layout.addWidget(QtWidgets.QLabel("Agent B:"))
-        arena_controls_layout.addWidget(self.run_b_selector)
-        
-        arena_layout.addWidget(arena_controls)
-
-        # 2. Arena Viewer Splitter
-        self.arena_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        
-        # Tabs for Agent A
-        self.tabs_a = QtWidgets.QTabWidget()
-        self.tabs_a.setStyleSheet(self.oracle_tabs.styleSheet())
-        self.view_a_policy = MazeView(title="Agent A: Policy")
-        self.view_a_values = MazeView(title="Agent A: Values")
-        self.tabs_a.addTab(self.view_a_policy, "Policy")
-        self.tabs_a.addTab(self.view_a_values, "Value")
-
-        # Tabs for Agent B
-        self.tabs_b = QtWidgets.QTabWidget()
-        self.tabs_b.setStyleSheet(self.oracle_tabs.styleSheet())
-        self.view_b_policy = MazeView(title="Agent B: Policy")
-        self.view_b_values = MazeView(title="Agent B: Values")
-        self.tabs_b.addTab(self.view_b_policy, "Policy")
-        self.tabs_b.addTab(self.view_b_values, "Value")
-
-        self.arena_splitter.addWidget(self.tabs_a)
-        self.arena_splitter.addWidget(self.tabs_b)
-        self.arena_splitter.setSizes([600, 600])
-        
-        arena_layout.addWidget(self.arena_splitter)
-        self.workspaces.addWidget(self.arena_page) # Replace placeholder at index 1
-
+        self.workspaces.addWidget(self.analytics_page) # Index 1
 
     def connect_signals(self):
         """Connects UI elements to logic methods."""
         self.refresh_runs_btn.clicked.connect(self.refresh_runs)
-        self.run_selector.currentIndexChanged.connect(self.on_run_selected)
-        self.dataset_selector.currentIndexChanged.connect(self.on_dataset_selected)
-        self.view_agent_entropy.cellClicked.connect(self.update_neuro_probe)
         
-        # --- SYNC SLIDER AND SPINBOX ---
+        # New Dropdowns
+        self.left_selector.currentIndexChanged.connect(self.on_left_selected)
+        self.right_selector.currentIndexChanged.connect(self.on_right_selected)
+        self.dataset_selector.currentIndexChanged.connect(self.on_dataset_selected)
+        
+        # Sync Slider and Spinbox
         self.maze_slider.valueChanged.connect(self.maze_spinbox.setValue)
         self.maze_spinbox.valueChanged.connect(self.maze_slider.setValue)
-        
-        # Both trigger the display update via the slider
         self.maze_slider.valueChanged.connect(self.update_display)
 
-        # Run Batch Test
         self.run_test_btn.clicked.connect(self.run_batch_test)
-
-        # Connect Neuro-Probe
-        self.view_agent.cellClicked.connect(self.update_neuro_probe)
-        # Connect Neuro-Probe to BOTH Agent views so you can click the heatmap too!
-        self.view_agent_policy.cellClicked.connect(self.update_neuro_probe)
-        self.view_agent_values.cellClicked.connect(self.update_neuro_probe)
-
-        # Connect Oracle views to the probe logic
-        self.view_oracle_policy.cellClicked.connect(self.update_neuro_probe)
-        self.view_oracle_values.cellClicked.connect(self.update_neuro_probe)
-
-        # Connect Agent views 
-        self.view_agent_policy.cellClicked.connect(self.update_neuro_probe)
-        self.view_agent_values.cellClicked.connect(self.update_neuro_probe)
-        self.view_agent_entropy.cellClicked.connect(self.update_neuro_probe)
-
-        # New: Workspace Switching
         self.workspace_group.buttonClicked[int].connect(self.on_workspace_changed)
 
-        # Workspace 2 Arena
-        self.run_a_selector.currentIndexChanged.connect(self.on_run_a_selected)
-        self.run_b_selector.currentIndexChanged.connect(self.on_run_b_selected)
-
-    def on_workspace_changed(self, index):
-        """Changes the visible workspace."""
-        self.workspaces.setCurrentIndex(index)
+        # Connect ALL 6 views to the neuro probe
+        for view in[self.view_left_policy, self.view_left_values, self.view_left_entropy,
+                     self.view_right_policy, self.view_right_values, self.view_right_entropy]:
+            view.cellClicked.connect(self.update_neuro_probe)
     
     def keyPressEvent(self, event):
-        """Allows global keyboard arrow keys to scrub through mazes."""
         if event.key() == QtCore.Qt.Key_Up or event.key() == QtCore.Qt.Key_Right:
             self.maze_slider.setValue(self.maze_slider.value() + 1)
         elif event.key() == QtCore.Qt.Key_Down or event.key() == QtCore.Qt.Key_Left:
@@ -439,50 +280,30 @@ class AliosWindow(QtWidgets.QWidget):
         else:
             super().keyPressEvent(event)
 
-    
-    # ============================
-    # WORKSPACE 2
-    # ============================
-
-    def refresh_runs(self):
-        runs = db_manager.get_all_runs()
-        # Update all 3 selectors
-        for s in [self.run_selector, self.run_a_selector, self.run_b_selector]:
-            s.blockSignals(True)
-            s.clear()
-            s.addItems(runs)
-            s.blockSignals(False)
-
-    def on_run_a_selected(self):
-        run_id = self.run_a_selector.currentText()
-        details = db_manager.get_run_details(run_id)
-        if details:
-            self.agent_a_q = jnp.array(np.load(details['path']))
-            self.decoder_a = core_logic.STATE_MAP_FUNCS_JIT.get(details['state_repr'])
-            self.update_display()
-
-    def on_run_b_selected(self):
-        run_id = self.run_b_selector.currentText()
-        details = db_manager.get_run_details(run_id)
-        if details:
-            self.agent_b_q = jnp.array(np.load(details['path']))
-            self.decoder_b = core_logic.STATE_MAP_FUNCS_JIT.get(details['state_repr'])
-            self.update_display()
+    def on_workspace_changed(self, index):
+        self.workspaces.setCurrentIndex(index)
 
     # ============================
     # DATA & LOGIC METHODS
     # ============================
 
     def refresh_runs(self):
-        """Queries the SQLite DB via db_manager and updates the run dropdown."""
-        self.run_selector.blockSignals(True) # Prevent triggering on_run_selected while loading
-        self.run_selector.clear()
         runs = db_manager.get_all_runs()
-        self.run_selector.addItems(runs)
-        self.run_selector.blockSignals(False)
+        items = ["Oracle (Value Iteration)"] + runs
+        
+        for selector in [self.left_selector, self.right_selector]:
+            selector.blockSignals(True)
+            selector.clear()
+            selector.addItems(items)
+            selector.blockSignals(False)
+            
+        self.left_selector.setCurrentIndex(0)
+        if len(items) > 1:
+            self.right_selector.setCurrentIndex(1)
+        self.on_left_selected()
+        self.on_right_selected()
 
     def scan_datasets(self):
-        """Lists all .npy maze files and picks the first one."""
         self.dataset_selector.blockSignals(True)
         path = "data_jax"
         if os.path.exists(path):
@@ -490,90 +311,106 @@ class AliosWindow(QtWidgets.QWidget):
             self.dataset_selector.addItems(files)
         self.dataset_selector.blockSignals(False)
         
-        # Manually trigger the first load
         if self.dataset_selector.count() > 0:
             self.dataset_selector.setCurrentIndex(0)
             self.on_dataset_selected()
 
+    def _load_selection(self, text_val):
+        if text_val == "Oracle (Value Iteration)" or not text_val:
+            return 'oracle', None, None, None, None # Added 5th None
+            
+        details = db_manager.get_run_details(text_val)
+        if details and os.path.exists(details['path']):
+            r_key = details['state_repr']
+            q = jnp.array(np.load(details['path']))
+            dec = core_logic.DECODERS.get(r_key, core_logic.decode_mdp)
+            dec_jit = core_logic.STATE_MAP_FUNCS_JIT.get(r_key, core_logic.STATE_MAP_FUNCS_JIT['mdp'])
+            dec_raw = core_logic.STATE_MAP_FUNCS_RAW.get(r_key, core_logic.STATE_MAP_FUNCS_RAW['mdp']) # NEW
+            return 'agent', q, dec, dec_jit, dec_raw
+        return 'oracle', None, None, None, None
+    
 
-    def on_run_selected(self):
-        """Triggered when a user picks a different training run."""
-        run_id = self.run_selector.currentText()
-        if not run_id: return
-        
-        details = db_manager.get_run_details(run_id)
-        if details:
-            repr_key = details['state_repr']
-            
-            # 1. Fetch the scalar decoder (for click probes)
-            self.current_decoder = core_logic.DECODERS.get(repr_key, core_logic.decode_mdp)
-            
-            # 2. Fetch the JIT Vectorized mapper (for UI rendering and Batch Testing)
-            self.vector_decoder_jit = core_logic.STATE_MAP_FUNCS_JIT.get(repr_key, core_logic.STATE_MAP_FUNCS_JIT["mdp"])
-            
-            # Update display metadata
-            self.config_display.setText(json.dumps(details['config'], indent=4))
-            self.current_agent_q = jnp.array(np.load(details['path'])) 
-            
-            self.update_display()
+    def on_left_selected(self):
+        val = self.left_selector.currentText()
+        self.left_type, self.left_q, self.left_decoder, self.left_decoder_jit, self.left_decoder_raw = self._load_selection(val)
+        self._refresh_rollout_caches() # Cache!
+        self.update_display()
+
+    def on_right_selected(self):
+        val = self.right_selector.currentText()
+        self.right_type, self.right_q, self.right_decoder, self.right_decoder_jit, self.right_decoder_raw = self._load_selection(val)
+        if val != "Oracle (Value Iteration)":
+            details = db_manager.get_run_details(val)
+            if details: self.config_display.setText(json.dumps(details['config'], indent=4))
+        else:
+            self.config_display.setText("Oracle (Value Iteration) loaded.")
+        self._refresh_rollout_caches() # Cache!
+        self.update_display()
 
     def on_dataset_selected(self):
         ds_name = self.dataset_selector.currentText()
         if not ds_name: return
         
-        # 1. Load raw mazes
         self.current_mazes = np.load(os.path.join("data_jax", ds_name))
         self.current_mazes_jax = jnp.array(self.current_mazes)
         
-        # 2. Load Oracle .npz
         vi_filename = ds_name.replace(".npy", "_VI_solved.npz")
         vi_path = os.path.join("data_jax", "value_iteration", vi_filename)
         
         if os.path.exists(vi_path):
             with np.load(vi_path) as data:
                 self.current_vi_policies = data['policy']
-                self.current_vi_values = data['values'] # <--- ADD THIS LINE
-            print(f"Loaded Oracle: {vi_filename}")
+                self.current_vi_values = data['values']
         else:
             self.current_vi_policies = None
-            self.current_vi_values = None # <--- ADD THIS LINE
+            self.current_vi_values = None
 
+        self._refresh_rollout_caches() 
         self.update_display()
+    
+    def _refresh_rollout_caches(self):
+        """Silently pre-computes rollouts for all 1000 mazes to guarantee 0-lag sliders."""
+        if self.current_mazes_jax is None: return
 
-    def on_maze_slider_moved(self):
-        """Update label and redraw views when slider moves."""
-        idx = self.maze_slider.value()
-        self.maze_label.setText(f"Maze Index: {idx}")
-        self.update_display()
+        # 1. Cache Left Agent
+        if self.left_type == 'agent' and self.left_q is not None and self.left_decoder_raw is not None:
+            res_l = core_logic.evaluate_dataset(self.left_q, self.current_mazes_jax, self.left_decoder_raw)
+            self.left_rollout_cache = {'steps': np.array(res_l[2]), 'success': np.array(res_l[4])}
+        else:
+            self.left_rollout_cache = None
 
+        # 2. Cache Right Agent
+        if self.right_type == 'agent' and self.right_q is not None and self.right_decoder_raw is not None:
+            res_r = core_logic.evaluate_dataset(self.right_q, self.current_mazes_jax, self.right_decoder_raw)
+            self.right_rollout_cache = {'steps': np.array(res_r[2]), 'success': np.array(res_r[4])}
+        else:
+            self.right_rollout_cache = None
 
     def run_batch_test(self):
-        if self.current_agent_q is None or self.current_mazes_jax is None:
+        # We run the batch test on whatever is loaded in the RIGHT panel
+        if self.right_type != 'agent' or self.right_q is None or self.current_mazes_jax is None:
+            self.stats_display.setText("Load an Agent in the Right Panel to test.")
             return
             
         self.run_test_btn.setText("Computing Rollouts...")
         QtWidgets.QApplication.processEvents()
         
-        # 1. Run JAX Rollouts
-        res = core_logic.evaluate_dataset(
-            self.current_agent_q, 
-            self.current_mazes_jax, 
-            self.vector_decoder_jit
-        )
+        # Fetch the raw decoder required for JAX batch testing
+        details = db_manager.get_run_details(self.right_selector.currentText())
+        r_key = details['state_repr']
+        raw_decoder = core_logic.STATE_MAP_FUNCS_RAW.get(r_key, core_logic.STATE_MAP_FUNCS_RAW['mdp'])
+
+        res = core_logic.evaluate_dataset(self.right_q, self.current_mazes_jax, raw_decoder)
         
-        # Unpack results from JAX
-        # (r, c, steps, collisions, reached_goal)
         steps_arr = np.array(res[2])
         colls_arr = np.array(res[3])
         goal_arr = np.array(res[4])
         
-        # 2. Basic Stats
         total = len(goal_arr)
         success_count = np.sum(goal_arr)
         success_rate = (success_count / total) * 100
         timeout_rate = (np.sum(steps_arr >= 500) / total) * 100
         
-        # 3. Efficiency Stats (Successful runs only)
         avg_steps = 0
         avg_colls = 0
         opt_gap = 1.0
@@ -583,16 +420,11 @@ class AliosWindow(QtWidgets.QWidget):
             avg_steps = np.mean(steps_arr[success_mask])
             avg_colls = np.mean(colls_arr[success_mask])
             
-            # --- THE OPTIMALITY GAP ---
             if self.current_vi_policies is not None:
-                # Calculate Oracle's average steps for the SAME successful mazes
-                # (Remember: VI values at start (0,0) are -steps to goal)
-                # We use absolute because values are negative
                 oracle_steps_all = np.abs(self.current_vi_values[:, 0, 0])
                 avg_oracle_steps = np.mean(oracle_steps_all[success_mask])
                 opt_gap = avg_steps / avg_oracle_steps
 
-        # 4. Display Result
         self.stats_display.setText(
             f"<b>RESULT SUMMARY:</b><br>"
             f"-------------------------<br>"
@@ -603,160 +435,162 @@ class AliosWindow(QtWidgets.QWidget):
             f"-------------------------<br>"
             f"<b style='color: #FFD700;'>Optimality Gap: {opt_gap:.2f}x</b>"
         )
-        self.run_test_btn.setText("Run Batch Test (1000 Mazes)")
-
+        self.run_test_btn.setText("Run Batch Test on Right Panel")
 
     def update_neuro_probe(self, r, c, state_id, aliased_count):
-        if self.current_agent_q is not None:
-            q_vals = self.current_agent_q[state_id]
+        # If toggled off
+        if r == -1:
+            self.neuro_label.setText("Click a cell to probe its internal state.")
+            for view in[self.view_left_policy, self.view_left_values, self.view_left_entropy,
+                         self.view_right_policy, self.view_right_values, self.view_right_entropy]:
+                view.clear_highlights()
+                view.clear_trajectory()
+            return
+        
+        # --- BUG 1 FIX: SYNC THE STATE MAPS FOR HIGHLIGHTING ---
+        idx = self.maze_slider.value()
+        maze_jax = self.current_mazes_jax[idx]
+        
+        # Determine which decoder the clicked panel is using
+        active_decoder = self.right_decoder_jit if self.right_type == 'agent' else self.left_decoder_jit
+        if active_decoder is not None:
+            shared_state_map = active_decoder(maze_jax)
             
-            # Colors for sync
-            blue_rgba = [0, 191, 255, 120]
-            gold_rgba = [255, 215, 0, 120]
+            # Force ALL views to use the clicked panel's state map for the highlight
+            self.view_left_policy.set_state_map(shared_state_map)
+            self.view_left_values.set_state_map(shared_state_map)
+            self.view_left_entropy.set_state_map(shared_state_map)
+        # -------------------------------------------------------
 
-            # 1. Update ALL Highlights simultaneously
-            self.view_oracle_policy.highlight_aliased_states(state_id, blue_rgba)
-            self.view_oracle_values.highlight_aliased_states(state_id, blue_rgba)
-            
-            self.view_agent_policy.highlight_aliased_states(state_id, gold_rgba)
-            self.view_agent_values.highlight_aliased_states(state_id, gold_rgba)
-            self.view_agent_entropy.highlight_aliased_states(state_id, gold_rgba)
+        # Highlight ALL views
+        blue_rgba =[0, 191, 255, 120]
+        gold_rgba =[255, 215, 0, 120]
+        L_color = blue_rgba if self.left_type == 'oracle' else gold_rgba
+        R_color = blue_rgba if self.right_type == 'oracle' else gold_rgba
 
+        self.view_left_policy.highlight_aliased_states(state_id, L_color)
+        self.view_left_values.highlight_aliased_states(state_id, L_color)
+        self.view_left_entropy.highlight_aliased_states(state_id, L_color)
+        
+        self.view_right_policy.highlight_aliased_states(state_id, R_color)
+        self.view_right_values.highlight_aliased_states(state_id, R_color)
+        self.view_right_entropy.highlight_aliased_states(state_id, R_color)
 
-            # 1. Calculate Entropy (Confusion)
+        # We probe the Right Agent by default. If Right is Oracle, probe Left.
+        agent_q = self.right_q if self.right_q is not None else self.left_q
+        agent_decoder = self.right_decoder if self.right_decoder is not None else self.left_decoder
+
+        if agent_q is not None:
+            q_vals = agent_q[state_id]
             entropy = core_logic.calculate_entropy(q_vals)
             
-            # 2. Calculate Conflict (Fatal vs Benign Aliasing)
-            # We need the current state_map and oracle_policy
             idx = self.maze_slider.value()
-            state_map = self.vector_decoder_jit(self.current_mazes_jax[idx])
-            oracle_p = self.current_vi_policies[idx]
+            oracle_p = self.current_vi_policies[idx] if self.current_vi_policies is not None else None
             
-            conflict = core_logic.calculate_conflict(state_id, state_map, oracle_p)
+            if oracle_p is not None and hasattr(self, 'right_decoder_jit') and self.right_decoder_jit is not None:
+                state_map = self.right_decoder_jit(self.current_mazes_jax[idx])
+                conflict = core_logic.calculate_conflict(state_id, state_map, oracle_p)
+            else:
+                conflict = 0.0
             
-            # 3. Build the Rich Text Readout
-            color_id = "#FFD700" # Gold
             text = (
-                f"<b style='color:{color_id};'>State ID:</b> {state_id}<br>"
-                f"<b style='color:{color_id};'>Aliased:</b> {aliased_count} locations<br>"
-                f"<b style='color:{color_id};'>Conflict:</b> {conflict:.1f}%<br>"
-                f"<b style='color:{color_id};'>Entropy:</b> {entropy:.3f}<br>"
+                f"<b style='color:#FFD700;'>State ID:</b> {state_id}<br>"
+                f"<b style='color:#FFD700;'>Aliased:</b> {aliased_count} locations<br>"
+                f"<b style='color:#FFD700;'>Conflict:</b> {conflict:.1f}%<br>"
+                f"<b style='color:#FFD700;'>Entropy:</b> {entropy:.3f}<br>"
                 f"<hr style='border: 1px solid #444;'>"
                 f"<b>[↑] Up   :</b> {q_vals[0]:>8.2f}<br>"
                 f"<b>[↓] Down :</b> {q_vals[1]:>8.2f}<br>"
                 f"<b>[←] Left :</b> {q_vals[2]:>8.2f}<br>"
                 f"<b>[→] Right:</b> {q_vals[3]:>8.2f}<br>"
             )
-            
             self.neuro_label.setText(text)
-            self.inspect_group.setTitle(f"Neuro-Probe: ({r}, {c})")
 
-            # --- NEW: Compute and Draw Trajectory ---
-            idx = self.maze_slider.value()
+            # Draw Trajectory
             maze = self.current_mazes[idx]
-            
-            # Compute path using the scalar decoder
-            path = core_logic.compute_rollout(
-                maze, 
-                (r, c), 
-                self.current_agent_q, 
-                self.current_decoder
-            )
-            
-            # Draw the line on both Agent tabs
-            self.view_agent_policy.draw_trajectory(path)
-            self.view_agent_values.draw_trajectory(path)
+            path = core_logic.compute_rollout(maze, (r, c), agent_q, agent_decoder)
+            self.view_right_policy.draw_trajectory(path)
+            self.view_right_values.draw_trajectory(path)
+            self.view_left_policy.draw_trajectory(path)
+            self.view_left_values.draw_trajectory(path)
 
-        
+    def _get_panel_data(self, panel_type, q_table, decoder_jit, idx, maze_jax):
+        """Helper to extract Actions, Values, Entropy, and StateMap."""
+        if panel_type == 'oracle':
+            if self.current_vi_policies is None or self.current_vi_values is None: 
+                return None, None, None, None
+            actions = self.current_vi_policies[idx]
+            values = self.current_vi_values[idx]
+            entropy = np.zeros((16, 16))
+            state_map = core_logic.STATE_MAP_FUNCS_JIT['mdp'](maze_jax)
+            return actions, values, entropy, state_map
+        else:
+            if q_table is None or decoder_jit is None: 
+                return None, None, None, None
+            state_map = decoder_jit(maze_jax)
+            q_vectors = q_table[state_map]
+            actions = np.argmax(q_vectors, axis=-1)
+            values = np.max(q_vectors, axis=-1)
+            entropy = core_logic.calculate_entropy_grid(q_vectors)
+            return actions, values, entropy, state_map
+
     def update_display(self):
         idx = self.maze_slider.value()
-        if self.current_mazes is None:
-            return
+        if self.current_mazes is None: return
         
         maze = self.current_mazes[idx]
-        maze_jax_slice = self.current_mazes_jax[idx]
+        maze_jax = self.current_mazes_jax[idx]
 
-        # Reset all views
-        self.view_oracle_policy.set_maze(maze)
-        self.view_oracle_values.set_maze(maze)
-        self.view_agent_policy.set_maze(maze)
-        self.view_agent_values.set_maze(maze)
-        self.view_agent_entropy.set_maze(maze)
+        for view in[self.view_left_policy, self.view_left_values, self.view_left_entropy,
+                     self.view_right_policy, self.view_right_values, self.view_right_entropy]:
+            view.set_maze(maze)
 
-        # --- ORACLE TAB ---
-        if self.current_vi_policies is not None and self.current_vi_values is not None:
-            self.view_oracle_policy.draw_policy_vectorized(
-                maze,
-                self.current_vi_policies[idx],
-                base_color='#28A745'
-            )
-            self.view_oracle_values.set_heatmap(maze, self.current_vi_values[idx])
+        L_act, L_val, L_ent, L_map = self._get_panel_data(self.left_type, self.left_q, self.left_decoder_jit, idx, maze_jax)
+        R_act, R_val, R_ent, R_map = self._get_panel_data(self.right_type, self.right_q, self.right_decoder_jit, idx, maze_jax)
 
-        # --- AGENT TAB ---
-        if self.current_agent_q is not None and callable(getattr(self, 'vector_decoder_jit', None)):
+        # 1. Draw Left Panel (Green arrows)
+        if L_act is not None:
+            self.view_left_policy.set_state_map(L_map)
+            self.view_left_values.set_state_map(L_map)
+            self.view_left_entropy.set_state_map(L_map)
             
-            state_id_map = self.vector_decoder_jit(maze_jax_slice)
+            self.view_left_policy.draw_policy_vectorized(maze, L_act, base_color='#28A745')
+            self.view_left_values.set_heatmap(maze, L_val)
+            self.view_left_entropy.set_heatmap(maze, L_ent)
 
-            # Give the agent's view of the world to the ORACLE panels
-            self.view_oracle_policy.set_state_map(state_id_map)
-            self.view_oracle_values.set_state_map(state_id_map)
+        # 2. Draw Right Panel (Blue arrows, Red if diverges from Left)
+        if R_act is not None:
+            self.view_right_policy.set_state_map(R_map)
+            self.view_right_values.set_state_map(R_map)
+            self.view_right_entropy.set_state_map(R_map)
+            
+            # Left actions act as the truth for divergence checking
+            self.view_right_policy.draw_policy_vectorized(maze, R_act, oracle_actions=L_act, base_color='#00BFFF')
+            self.view_right_values.set_heatmap(maze, R_val)
+            self.view_right_entropy.set_heatmap(maze, R_ent)
+            
+            # Scoreboard Logic
+            # --- NEW FAST SCOREBOARD LOGIC ---
+        oracle_steps = int(abs(self.current_vi_values[idx, 0, 0])) if self.current_vi_values is not None else 0
 
-            # Q-vectors per state: (16, 16, 4)
-            q_vectors = self.current_agent_q[state_id_map]
+        # Title for LEFT Panel
+        if self.left_type == 'oracle':
+            self.view_left_policy.setTitle(f"Left Oracle: <span style='color:#00FF00;'>OPTIMAL</span> | Steps: {oracle_steps}", size='11pt')
+        elif self.left_rollout_cache is not None:
+            l_reached = self.left_rollout_cache['success'][idx]
+            l_steps = self.left_rollout_cache['steps'][idx]
+            l_status = "<span style='color:#00FF00;'>SUCCESS</span>" if l_reached else "<span style='color:#FF4500;'>FAILED</span>"
+            l_metric = f"Steps: {l_steps} (Oracle: {oracle_steps})" if l_reached else "Trapped in Loop"
+            self.view_left_policy.setTitle(f"Left Agent: {l_status} | {l_metric}", size='11pt')
 
-            # Metrics
-            agent_actions = np.argmax(q_vectors, axis=-1)
-            agent_values = np.max(q_vectors, axis=-1)
-
-            # Entropy (NEW)
-            agent_entropy = core_logic.calculate_entropy_grid(q_vectors)
-
-            # Provide state map to UI
-            self.view_agent_policy.set_state_map(state_id_map)
-            self.view_agent_values.set_state_map(state_id_map)
-            self.view_agent_entropy.set_state_map(state_id_map)
-
-            oracle_actions = self.current_vi_policies[idx] if self.current_vi_policies is not None else None
-
-            # Draw policy
-            self.view_agent_policy.draw_policy_vectorized(
-                maze,
-                agent_actions,
-                oracle_actions=oracle_actions
-            )
-
-            # Draw value heatmap
-            self.view_agent_values.set_heatmap(maze, agent_values)
-
-            # Draw entropy heatmap
-            self.view_agent_entropy.set_heatmap(maze, agent_entropy)
-
-            # --- ARENA WORKSPACE UPDATES ---
-            idx = self.maze_slider.value()
-            maze = self.current_mazes[idx]
-            maze_jax = self.current_mazes_jax[idx]
-
-            # Draw Agent A
-            if self.agent_a_q is not None and self.decoder_a:
-                map_a = self.decoder_a(maze_jax)
-                actions_a = np.argmax(self.agent_a_q[map_a], axis=-1)
-                values_a = np.max(self.agent_a_q[map_a], axis=-1)
-                
-                self.view_a_policy.set_maze(maze)
-                self.view_a_values.set_maze(maze)
-                self.view_a_policy.draw_policy_vectorized(maze, actions_a)
-                self.view_a_values.set_heatmap(maze, values_a)
-
-            # Draw Agent B
-            if self.agent_b_q is not None and self.decoder_b:
-                map_b = self.decoder_b(maze_jax)
-                actions_b = np.argmax(self.agent_b_q[map_b], axis=-1)
-                values_b = np.max(self.agent_b_q[map_b], axis=-1)
-                
-                self.view_b_policy.set_maze(maze)
-                self.view_b_values.set_maze(maze)
-                
-                # AGENT COMPARISON: Highlight where B differs from A
-                # We pass actions_a as the 'oracle' for this view
-                self.view_b_policy.draw_policy_vectorized(maze, actions_b, oracle_actions=actions_a)
-                self.view_b_values.set_heatmap(maze, values_b)
+        # Title for RIGHT Panel
+        if self.right_type == 'oracle':
+            self.current_maze_score = f"Right Oracle: <span style='color:#00FF00;'>OPTIMAL</span> | Steps: {oracle_steps}"
+            self.view_right_policy.setTitle(self.current_maze_score, size='11pt')
+        elif self.right_rollout_cache is not None:
+            r_reached = self.right_rollout_cache['success'][idx]
+            r_steps = self.right_rollout_cache['steps'][idx]
+            r_status = "<span style='color:#00FF00;'>SUCCESS</span>" if r_reached else "<span style='color:#FF4500;'>FAILED</span>"
+            r_metric = f"Steps: {r_steps} (Oracle: {oracle_steps})" if r_reached else "Trapped in Loop"
+            self.current_maze_score = f"Right Agent: {r_status} | {r_metric}"
+            self.view_right_policy.setTitle(self.current_maze_score, size='11pt')
