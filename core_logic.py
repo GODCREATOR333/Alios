@@ -30,15 +30,14 @@ def decode_pomdp_3x3_base3(maze, r, c):
     
     return (local_id * 4 + (dr * 2 + dc)).astype(jnp.int32)
 
-def decode_legacy_9bit(maze, r, c):
-    """Legacy: 9-bit window (0/1) + signed compass"""
+def decode_pomdp_9bit_compass(maze, r, c):
+    """JAX-Pure: 9-bit window (0/1) + signed compass"""
     padded = jnp.pad(maze, 1, constant_values=1)
     window = jax.lax.dynamic_slice(padded, (r, c), (3, 3)).flatten()
     
     powers = jnp.array([256, 128, 64, 32, 16, 8, 4, 2, 1], dtype=jnp.int32)
     win_id = jnp.sum(window.astype(jnp.int32) * powers)
     
-    # sign() returns float tracers, so we keep them as tracers for the math
     dr = jnp.sign(15 - r)
     dc = jnp.sign(15 - c)
     comp_id = (dr + 1) * 3 + (dc + 1)
@@ -60,10 +59,9 @@ def get_full_state_map_pomdp(maze):
     return jax.vmap(jax.vmap(decode_pomdp_3x3_base3, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(maze, r_idx, c_idx)
 
 @jax.jit
-def get_full_state_map_legacy(maze):
+def get_full_state_map_pomdp_9bit_compass(maze):
     r_idx, c_idx = jnp.indices((16, 16))
-    return jax.vmap(jax.vmap(decode_legacy_9bit, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(maze, r_idx, c_idx)
-
+    return jax.vmap(jax.vmap(decode_pomdp_9bit_compass, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(maze, r_idx, c_idx)
 # ==========================================================
 # 3. STATISTICAL EVALUATOR
 # ==========================================================
@@ -128,17 +126,19 @@ def compute_rollout(maze, start_pos, q_table, decoder_func, max_steps=512):
 DECODERS = {
     "mdp": decode_mdp,
     "3x3_base3_compass": decode_pomdp_3x3_base3,
-    "legacy_9bit_compass": decode_legacy_9bit,
+    "pomdp_9bit_compass": decode_pomdp_9bit_compass
 }
 
 STATE_MAP_FUNCS_RAW = {
     "mdp": get_full_state_map_mdp,
     "3x3_base3_compass": get_full_state_map_pomdp,
-    "legacy_9bit_compass": get_full_state_map_legacy
+    "pomdp_9bit_compass": decode_pomdp_9bit_compass
+    
 }
 
 STATE_MAP_FUNCS_JIT = {
     "mdp": get_full_state_map_mdp, # Already jitted above
     "3x3_base3_compass": get_full_state_map_pomdp,
-    "legacy_9bit_compass": get_full_state_map_legacy
+    "pomdp_9bit_compass": get_full_state_map_pomdp_9bit_compass
+
 }

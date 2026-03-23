@@ -504,25 +504,16 @@ class AliosWindow(QtWidgets.QWidget):
         details = db_manager.get_run_details(run_id)
         if details:
             repr_key = details['state_repr']
-            # Use .get(key, default) to prevent NoneType crashes!
-            self.current_decoder = core_logic.DECODERS.get(
-                repr_key, core_logic.decode_mdp
-            )
             
-            self.vector_decoder_jit = core_logic.STATE_MAP_FUNCS_JIT.get(
-                repr_key, core_logic.get_full_state_map_mdp
-            )
-
-    
-            # --- THE FIX: Create both versions ---
-            # JIT version is for the slider (buttery smooth)
-            self.vector_decoder_jit = core_logic.STATE_MAP_FUNCS_JIT.get(repr_key)
-            # RAW version is for the Batch Evaluator (prevents JAX crash)
-            self.vector_decoder_raw = core_logic.STATE_MAP_FUNCS_RAW.get(repr_key)
+            # 1. Fetch the scalar decoder (for click probes)
+            self.current_decoder = core_logic.DECODERS.get(repr_key, core_logic.decode_mdp)
             
-            # Update display
+            # 2. Fetch the JIT Vectorized mapper (for UI rendering and Batch Testing)
+            self.vector_decoder_jit = core_logic.STATE_MAP_FUNCS_JIT.get(repr_key, core_logic.STATE_MAP_FUNCS_JIT["mdp"])
+            
+            # Update display metadata
             self.config_display.setText(json.dumps(details['config'], indent=4))
-            self.current_agent_q = jnp.array(np.load(details['path'])) # Ensure Q is JAX array
+            self.current_agent_q = jnp.array(np.load(details['path'])) 
             
             self.update_display()
 
@@ -567,7 +558,7 @@ class AliosWindow(QtWidgets.QWidget):
         res = core_logic.evaluate_dataset(
             self.current_agent_q, 
             self.current_mazes_jax, 
-            self.vector_decoder_raw
+            self.vector_decoder_jit
         )
         
         # Unpack results from JAX
