@@ -278,9 +278,62 @@ class AliosWindow(QtWidgets.QWidget):
         self.workspaces.addWidget(self.inspector_page) # Index 0
 
         # --- WORKSPACE 2: ANALYTICS LAB ---
-        self.analytics_page = QtWidgets.QLabel("Analytics Lab: Global Statistical Benchmarking\n(Coming Soon)")
-        self.analytics_page.setStyleSheet("color: #555; font-size: 20pt;")
-        self.analytics_page.setAlignment(QtCore.Qt.AlignCenter)
+        # --- WORKSPACE 2: ANALYTICS LAB ---
+        self.analytics_page = QtWidgets.QWidget()
+        analytics_main_layout = QtWidgets.QHBoxLayout(self.analytics_page)
+        self.analytics_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+
+        # 1. Lab Sidebar (Left)
+        self.lab_sidebar = QtWidgets.QWidget()
+        self.lab_sidebar.setMinimumWidth(300)
+        lab_sidebar_layout = QtWidgets.QVBoxLayout(self.lab_sidebar)
+
+        # --- Multi-Agent Selection ---
+        self.agent_list_group = QtWidgets.QGroupBox("Select Agents to Benchmark")
+        agent_list_layout = QtWidgets.QVBoxLayout(self.agent_list_group)
+        self.agent_list_widget = QtWidgets.QListWidget()
+        self.agent_list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        agent_list_layout.addWidget(self.agent_list_widget)
+        lab_sidebar_layout.addWidget(self.agent_list_group)
+
+        # --- NEW: ADD THE DATASET LIST WIDGET HERE ---
+        self.lab_dataset_group = QtWidgets.QGroupBox("Select Datasets to Test")
+        lab_dataset_layout = QtWidgets.QVBoxLayout(self.lab_dataset_group)
+        self.dataset_list_widget = QtWidgets.QListWidget()
+        self.dataset_list_widget.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        lab_dataset_layout.addWidget(self.dataset_list_widget)
+        lab_sidebar_layout.addWidget(self.lab_dataset_group)
+
+        # --- Execution ---
+        self.btn_run_benchmarks = QtWidgets.QPushButton("RUN AGENT COMPARISON")
+        self.btn_run_benchmarks.setMinimumHeight(50)
+        self.btn_run_benchmarks.setStyleSheet("background-color: #00BFFF; color: black; font-weight: bold; border-radius: 5px;")
+        lab_sidebar_layout.addWidget(self.btn_run_benchmarks)
+        lab_sidebar_layout.addStretch()
+
+        # 2. Lab Plotting Area (Right)
+        self.plot_container = pg.GraphicsLayoutWidget()
+        self.plot_container.setBackground('#121212')
+        
+        # Row 1
+        self.plot_outcome = self.plot_container.addPlot(title="Outcome Profile (Success/Loop/Crash)")
+        self.plot_scatter = self.plot_container.addPlot(title="Optimality Scatter (Oracle vs Agent)")
+        self.plot_container.nextRow()
+        
+        # Row 2
+        self.plot_dist = self.plot_container.addPlot(title="Path Efficiency Distribution")
+        self.plot_entropy_corr = self.plot_container.addPlot(title="Entropy vs. Success Correlation")
+
+        # Style them
+        for p in [self.plot_outcome, self.plot_scatter, self.plot_dist, self.plot_entropy_corr]:
+            p.showGrid(x=True, y=True, alpha=0.3)
+
+        # Assemble Lab Page
+        self.analytics_splitter.addWidget(self.lab_sidebar)
+        self.analytics_splitter.addWidget(self.plot_container)
+        self.analytics_splitter.setSizes([300, 1100])
+        analytics_main_layout.addWidget(self.analytics_splitter)
+        
         self.workspaces.addWidget(self.analytics_page) # Index 1
 
     def connect_signals(self):
@@ -303,7 +356,11 @@ class AliosWindow(QtWidgets.QWidget):
         # Connect ALL 6 views to the neuro probe
         for view in[self.view_left_policy, self.view_left_values, self.view_left_entropy,
                      self.view_right_policy, self.view_right_values, self.view_right_entropy]:
-            view.cellClicked.connect(self.update_neuro_probe)
+            view.cellClicked.connect(self.update_neuro_probe)\
+            
+        
+        # Connect Lab Button
+        self.btn_run_benchmarks.clicked.connect(self.execute_benchmarks)
     
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_Up or event.key() == QtCore.Qt.Key_Right:
@@ -322,28 +379,46 @@ class AliosWindow(QtWidgets.QWidget):
 
     def refresh_runs(self):
         runs = db_manager.get_all_runs()
-        items = ["Oracle (Value Iteration)"] + runs
         
+        # 1. Existing Dropdown Logic (Inspector)
+        items = ["Oracle (Value Iteration)"] + runs
         for selector in [self.left_selector, self.right_selector]:
             selector.blockSignals(True)
             selector.clear()
             selector.addItems(items)
             selector.blockSignals(False)
-            
-        self.left_selector.setCurrentIndex(0)
-        if len(items) > 1:
-            self.right_selector.setCurrentIndex(1)
-        self.on_left_selected()
-        self.on_right_selected()
+
+        # 2. NEW: Lab Multi-Select List
+        self.agent_list_widget.clear()
+        for run_id in runs:
+            item = QtWidgets.QListWidgetItem(run_id)
+            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.Unchecked)
+            self.agent_list_widget.addItem(item)
 
     def scan_datasets(self):
-        self.dataset_selector.blockSignals(True)
+        """Lists all .npy maze files in the inspector dropdown and lab list."""
         path = "data_jax"
         if os.path.exists(path):
-            files = sorted([f for f in os.listdir(path) if f.endswith('.npy')])
+            files = sorted([f for f in os.listdir(path) if f.endswith('.npy') and 'train' not in f]) # Only test files
+            
+            # 1. Inspector Dropdown
+            self.dataset_selector.blockSignals(True)
+            self.dataset_selector.clear()
             self.dataset_selector.addItems(files)
-        self.dataset_selector.blockSignals(False)
+            self.dataset_selector.blockSignals(False)
+            
+            # 2. Lab Multi-Select List
+            self.dataset_list_widget.blockSignals(True)
+            self.dataset_list_widget.clear()
+            for f in files:
+                item = QtWidgets.QListWidgetItem(f)
+                item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+                item.setCheckState(QtCore.Qt.Unchecked)
+                self.dataset_list_widget.addItem(item)
+            self.dataset_list_widget.blockSignals(False)
         
+        # Trigger first load for the inspector
         if self.dataset_selector.count() > 0:
             self.dataset_selector.setCurrentIndex(0)
             self.on_dataset_selected()
@@ -469,6 +544,163 @@ class AliosWindow(QtWidgets.QWidget):
             f"<b style='color: #FFD700;'>Optimality Gap: {opt_gap:.2f}x</b>"
         )
         self.run_test_btn.setText("Run Batch Test on Right Panel")
+
+    def execute_benchmarks(self):
+        """Orchestrates the (Agents x Datasets) statistical experiment."""
+        # 1. Gather Checked Agents
+        selected_runs = [self.agent_list_widget.item(i).text() 
+                         for i in range(self.agent_list_widget.count()) 
+                         if self.agent_list_widget.item(i).checkState() == QtCore.Qt.Checked]
+        
+        # 2. Gather Checked Datasets
+        selected_datasets = [self.dataset_list_widget.item(i).text() 
+                             for i in range(self.dataset_list_widget.count()) 
+                             if self.dataset_list_widget.item(i).checkState() == QtCore.Qt.Checked]
+
+        if not selected_runs or not selected_datasets:
+            print("Warning: Select at least one agent and one dataset.")
+            return
+
+        self.btn_run_benchmarks.setText("Benchmarking...")
+        self.btn_run_benchmarks.setEnabled(False)
+        QtWidgets.QApplication.processEvents()
+
+        master_results = {}
+
+        for ds_name in selected_datasets:
+            # Load Dataset and Oracle start values for this dataset
+            ds_path = os.path.join("data_jax", ds_name)
+            mazes_jax = jnp.array(np.load(ds_path))
+            
+            vi_filename = ds_name.replace(".npy", "_VI_solved.npz")
+            vi_path = os.path.join("data_jax", "value_iteration", vi_filename)
+            oracle_v_start = None
+            if os.path.exists(vi_path):
+                with np.load(vi_path) as vi_data:
+                    oracle_v_start = np.abs(vi_data['values'][:, 0, 0])
+
+            for run_id in selected_runs:
+                details = db_manager.get_run_details(run_id)
+                q_table = jnp.array(np.load(details['path']))
+                r_key = details['state_repr']
+                
+                # Get map function for this agent
+                map_func = core_logic.STATE_MAP_FUNCS_RAW.get(r_key, core_logic.STATE_MAP_FUNCS_RAW['mdp'])
+
+                # Parallel rollout over 1,000 mazes
+                res = core_logic.evaluate_dataset(q_table, mazes_jax, map_func)
+                
+                reached = np.array(res[4])
+                steps = np.array(res[2])
+                
+                # Calculate Success Rate
+                success_rate = (np.sum(reached) / len(reached)) * 100
+                
+                # Calculate Optimality Gap
+                gap = 1.0
+                if np.any(reached) and oracle_v_start is not None:
+                    gap = np.mean(steps[reached]) / np.mean(oracle_v_start[reached])
+
+                # Extract Density (P value) from filename for the X-axis
+                try:
+                    density_str = ds_name.split('_P')[1].split('_')[0]
+                    density = float(density_str) / 1000.0
+                except:
+                    density = 0.0
+
+                master_results[(run_id, ds_name)] = {
+                    'success': success_rate,
+                    'gap': gap,
+                    'density': density,
+                    'reached_mask': reached,
+                    'steps': steps,
+                    'oracle_steps': oracle_v_start
+                }
+
+        # 3. Draw the 4-Lens Scientific Plots
+        self.draw_research_plots(master_results, selected_runs, selected_datasets)
+        
+        self.btn_run_benchmarks.setText("RUN AGENT COMPARISON")
+        self.btn_run_benchmarks.setEnabled(True)
+
+    def draw_research_plots(self, results, run_ids, ds_names):
+        # Clear the 4 plots we defined in the 2x2 grid
+        self.plot_outcome.clear()
+        self.plot_scatter.clear()
+        self.plot_dist.clear()
+        self.plot_entropy_corr.clear()
+
+        # --- LENS 1: PHASE TRANSITION (Success vs. Density) ---
+        self.plot_outcome.setTitle("Percolation Phase Transition: Success vs Density")
+        self.plot_outcome.addLegend()
+        
+        for run_id in run_ids:
+            # Sort by density for a clean line plot
+            agent_data = [results[(run_id, ds)] for ds in ds_names]
+            agent_data.sort(key=lambda x: x['density'])
+            
+            densities = [d['density'] for d in agent_data]
+            successes = [d['success'] for d in agent_data]
+            
+            # Plot the trend line
+            color = pg.intColor(run_ids.index(run_id))
+            self.plot_outcome.plot(densities, successes, pen=pg.mkPen(color, width=2), 
+                                   symbol='o', name=run_id)
+        
+        # Add the theoretical PC vertical line
+        self.plot_outcome.addLine(x=0.592, pen=pg.mkPen('r', style=QtCore.Qt.DashLine))
+        self.plot_outcome.setLabel('bottom', 'Obstacle Density (p)')
+        self.plot_outcome.setLabel('left', 'Success Rate (%)')
+
+        # --- LENS 2: AGGREGATED OPTIMALITY SCATTER ---
+        self.plot_scatter.setTitle("Optimality Scatter (All Selected Datasets)")
+        for run_id in run_ids:
+            color = pg.intColor(run_ids.index(run_id), alpha=150)
+            for ds in ds_names:
+                d = results[(run_id, ds)]
+                if d['oracle_steps'] is not None:
+                    mask = d['reached_mask']
+                    self.plot_scatter.plot(d['oracle_steps'][mask], d['steps'][mask], 
+                                           pen=None, symbol='o', symbolSize=4, symbolBrush=color)
+        
+        self.plot_scatter.plot([0, 100], [0, 100], pen=pg.mkPen('w', style=QtCore.Qt.DashLine))
+        self.plot_scatter.setLabel('bottom', 'Oracle Steps')
+        self.plot_scatter.setLabel('left', 'Agent Steps')
+
+        # --- LENS 3: EFFICIENCY DISTRIBUTION (Histograms) ---
+        self.plot_dist.setTitle("Path Efficiency Distribution")
+        for run_id in run_ids:
+            color = pg.intColor(run_ids.index(run_id))
+            all_gaps = []
+            for ds in ds_names:
+                d = results[(run_id, ds)]
+                if d['oracle_steps'] is not None and np.any(d['reached_mask']):
+                    mask = d['reached_mask']
+                    all_gaps.extend(d['steps'][mask] / d['oracle_steps'][mask])
+            
+            if all_gaps:
+                y, x = np.histogram(all_gaps, bins=np.linspace(1, 5, 40))
+                self.plot_dist.plot(x, y, stepMode="center", fillLevel=0, 
+                                    fillBrush=(*color.getRgb()[:3], 50), pen=color)
+        self.plot_dist.setLabel('bottom', 'Efficiency Ratio (Steps / Oracle)')
+
+        # --- LENS 4: PLACEHOLDER FOR ENTROPY/CONFLICT ---
+        self.plot_entropy_corr.setTitle("Future: Entropy vs Failure Correlation")
+
+    def update_lab_plots(self, names, success_rates, gaps):
+        """Refreshes the bar charts in the Analytics Lab."""
+        self.success_plot.clear()
+        self.gap_plot.clear()
+        x = np.arange(len(names))
+        
+        bg_success = pg.BarGraphItem(x=x, height=success_rates, width=0.6, brush='#28A745')
+        self.success_plot.addItem(bg_success)
+        self.success_plot.getAxis('bottom').setTicks([list(enumerate(names))])
+        
+        bg_gap = pg.BarGraphItem(x=x, height=gaps, width=0.6, brush='#00BFFF')
+        self.gap_plot.addItem(bg_gap)
+        self.gap_plot.getAxis('bottom').setTicks([list(enumerate(names))])
+        self.gap_plot.addLine(y=1.0, pen=pg.mkPen('w', style=QtCore.Qt.DashLine))
 
     def update_neuro_probe(self, r, c, state_id, aliased_count):
         # If toggled off
