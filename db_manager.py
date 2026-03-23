@@ -2,7 +2,7 @@ import sqlite3
 import json
 import os
 
-DB_PATH = "Alios_meta.db"
+DB_PATH = "./Database/Alios_meta.db"
 
 def get_all_runs():
     """Returns a list of all run_ids from the DB."""

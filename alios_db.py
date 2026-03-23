@@ -7,7 +7,7 @@ from datetime import datetime
 # --- Configuration ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ARTIFACT_DIR = os.path.join(BASE_DIR, "Artifacts")
-DB_PATH = os.path.join(BASE_DIR, "alios_meta.db")
+DB_PATH = os.path.join(BASE_DIR, "./Database/Alios_meta.db")
 
 # Ensure the artifacts folder exists
 if not os.path.exists(ARTIFACT_DIR):
