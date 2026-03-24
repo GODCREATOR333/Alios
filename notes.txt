@@ -1,0 +1,15 @@
+Open DB : sqlite3 Database/Alios_meta.db     
+
+View table in terminal:
+.headers on
+.mode table
+SELECT * FROM runs;
+
+If table is large : SELECT run_id, algo, state_repr, timestamp FROM runs;
+
+
+Delete something :
+sqlite3 Database/Alios_meta.db "DELETE FROM runs WHERE run_id LIKE '%GEO%'; "
+
+
+Print Available Algos in DB : SELECT run_id, algo FROM runs;

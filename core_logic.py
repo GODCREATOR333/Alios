@@ -106,6 +106,35 @@ def evaluate_dataset(q_table, dataset_jax, state_map_func):
 
     return jax.vmap(rollout)(dataset_jax, all_actions)
 
+def calculate_policy_safety(q_table, maze, state_map_func):
+    """
+    Checks EVERY open cell in the maze. 
+    Returns the % of cells where the greedy action hits a wall.
+    """
+    # 1. Get the full action map for the grid
+    state_map = state_map_func(maze)
+    actions = jnp.argmax(q_table[state_map], axis=-1)
+    
+    # 2. Map actions to deltas
+    dr = jnp.array([-1, 1, 0, 0])[actions]
+    dc = jnp.array([0, 0, -1, 1])[actions]
+    
+    r, c = jnp.indices((16, 16))
+    nr, nc = r + dr, c + dc
+    
+    # 3. Check if the destination is a wall
+    out = (nr < 0) | (nr >= 16) | (nc < 0) | (nc >= 16)
+    safe_nr, safe_nc = jnp.clip(nr, 0, 15), jnp.clip(nc, 0, 15)
+    hits_wall = out | (maze[safe_nr, safe_nc] == 1)
+    
+    # 4. Only count open cells (maze == 0) and ignore the Goal (15,15)
+    is_path = (maze == 0) & ~((r == 15) & (c == 15))
+    
+    unsafe_cells = jnp.sum(hits_wall & is_path)
+    total_path_cells = jnp.sum(is_path)
+    
+    return (unsafe_cells / total_path_cells) * 100
+
 # ==========================================================
 # 4. MATHEMATICAL PROBES
 # ==========================================================

@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import pyqtgraph as pg
 from PyQt5 import QtWidgets, QtCore, QtGui
 from analytics_view import AnalyticsDashboard
+import jax
 
 # Local Imports
 from viewer_2d import MazeView
@@ -552,20 +553,17 @@ class AliosWindow(QtWidgets.QWidget):
             self.right_sort_map = np.arange(1000)
 
     def run_batch_test(self):
-        # We run the batch test on whatever is loaded in the RIGHT panel
-        if self.right_type != 'agent' or self.right_q is None or self.current_mazes_jax is None:
-            self.stats_display.setText("Load an Agent in the Right Panel to test.")
+        if self.right_q is None or self.current_mazes_jax is None:
             return
             
         self.run_test_btn.setText("Computing Rollouts...")
         QtWidgets.QApplication.processEvents()
         
-        # Fetch the raw decoder required for JAX batch testing
         details = db_manager.get_run_details(self.right_selector.currentText())
         r_key = details['state_repr']
-        raw_decoder = core_logic.STATE_MAP_FUNCS_RAW.get(r_key, core_logic.STATE_MAP_FUNCS_RAW['mdp'])
+        map_func = core_logic.STATE_MAP_FUNCS_RAW.get(r_key, core_logic.STATE_MAP_FUNCS_RAW['mdp'])
 
-        res = core_logic.evaluate_dataset(self.right_q, self.current_mazes_jax, raw_decoder)
+        res = core_logic.evaluate_dataset(self.right_q, self.current_mazes_jax, map_func)
         
         steps_arr = np.array(res[2])
         colls_arr = np.array(res[3])
@@ -576,27 +574,38 @@ class AliosWindow(QtWidgets.QWidget):
         success_rate = (success_count / total) * 100
         timeout_rate = (np.sum(steps_arr >= 500) / total) * 100
         
-        avg_steps = 0
-        avg_colls = 0
-        opt_gap = 1.0
+        # --- THE FIX: GLOBAL STATS ---
+        # We calculate collisions across ALL 1,000 mazes
+        global_avg_colls = np.mean(colls_arr) 
         
+        # Efficiency stats (Successful runs only)
+        avg_steps_success = 0
+        opt_gap = 1.0
+
+        # Calculate how many arrows in the entire dataset point to walls
+        # We can vmap the new safety function over the batch
+        safety_scores = jax.vmap(core_logic.calculate_policy_safety, in_axes=(None, 0, None))(
+            self.right_q, self.current_mazes_jax, self.right_decoder_raw)
+        avg_field_unsafe = np.mean(safety_scores)
+
         if success_count > 0:
             success_mask = (goal_arr == True)
-            avg_steps = np.mean(steps_arr[success_mask])
-            avg_colls = np.mean(colls_arr[success_mask])
+            avg_steps_success = np.mean(steps_arr[success_mask])
             
             if self.current_vi_policies is not None:
                 oracle_steps_all = np.abs(self.current_vi_values[:, 0, 0])
-                avg_oracle_steps = np.mean(oracle_steps_all[success_mask])
-                opt_gap = avg_steps / avg_oracle_steps
+                avg_oracle = np.mean(oracle_steps_all[success_mask])
+                opt_gap = avg_steps_success / (avg_oracle + 1e-6)
 
+        # 4. Updated Display Result
         self.stats_display.setText(
             f"<b>RESULT SUMMARY:</b><br>"
             f"-------------------------<br>"
             f"Success Rate : {success_rate:>6.1f}%<br>"
             f"Timeout Rate : {timeout_rate:>6.1f}%<br>"
-            f"Avg Collide  : {avg_colls:>6.1f}<br>"
-            f"Avg Steps    : {avg_steps:>6.1f}<br>"
+            f"<b style='color: #FF4500;'>Policy Unsafe: {avg_field_unsafe:>6.1f}% (global)</b>"
+            f"<b>Avg Collide  : {global_avg_colls:>6.1f}</b><br>"
+            f"Avg Steps(S) : {avg_steps_success:>6.1f}<br>"
             f"-------------------------<br>"
             f"<b style='color: #FFD700;'>Optimality Gap: {opt_gap:.2f}x</b>"
         )
