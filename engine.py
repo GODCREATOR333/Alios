@@ -866,6 +866,12 @@ class AliosWindow(QtWidgets.QWidget):
                 views[0].draw_policy_vectorized(maze, act, oracle_actions=comparison_baseline, base_color=color)
                 views[1].set_heatmap(maze, val)
                 views[2].set_heatmap(maze, ent)
+            else:
+                # Tell the viewer to hide all arrows
+                views[0].draw_policy_vectorized(maze, np.zeros((16,16)), base_color=color)
+                # Ensure heatmap images are cleared
+                views[1].img.clear()
+                views[2].img.clear()
 
             # 4. Update the titles (Scoreboard)
             if p_type == 'oracle':

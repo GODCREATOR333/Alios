@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 from functools import partial
 
+
 # ==========================================================
 # 1. STATE DECODERS (JAX-Pure)
 # ==========================================================
@@ -44,6 +45,20 @@ def decode_pomdp_9bit_compass(maze, r, c):
     
     return (win_id * 9 + comp_id).astype(jnp.int32)
 
+def decode_pure_egocentric_3x3(maze, r, c):
+    """Pure Egocentric: 9-bit window (including center). Total states: 512."""
+    padded = jnp.pad(maze, 1, constant_values=1)
+    window = jax.lax.dynamic_slice(padded, (r, c), (3, 3)).flatten()
+    powers = jnp.array([256, 128, 64, 32, 16, 8, 4, 2, 1], dtype=jnp.int32)
+    return jnp.sum(window.astype(jnp.int32) * powers).astype(jnp.int32)
+
+def decode_pure_geocentric_compass(maze, r, c):
+    """Pure Geocentric: 9-way signed compass only. Total states: 9."""
+    dr = jnp.sign(15 - r)
+    dc = jnp.sign(15 - c)
+    return ((dr + 1) * 3 + (dc + 1)).astype(jnp.int32)
+
+
 # ==========================================================
 # 2. VECTORIZED STATE MAPPERS (JIT)
 # ==========================================================
@@ -60,6 +75,14 @@ def get_full_state_map_pomdp(maze):
 def get_full_state_map_pomdp_9bit_compass(maze):
     r_idx, c_idx = jnp.indices((16, 16))
     return jax.vmap(jax.vmap(decode_pomdp_9bit_compass, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(maze, r_idx, c_idx)
+
+def get_full_state_map_pure_ego(maze):
+    r_idx, c_idx = jnp.indices((16, 16))
+    return jax.vmap(jax.vmap(decode_pure_egocentric_3x3, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(maze, r_idx, c_idx)
+
+def get_full_state_map_pure_geo(maze):
+    r_idx, c_idx = jnp.indices((16, 16))
+    return jax.vmap(jax.vmap(decode_pure_geocentric_compass, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(maze, r_idx, c_idx)
 # ==========================================================
 # 3. STATISTICAL EVALUATOR
 # ==========================================================
@@ -158,19 +181,25 @@ def calculate_path_correlation_batch(final_results):
 DECODERS = {
     "mdp": decode_mdp,
     "3x3_base3_compass": decode_pomdp_3x3_base3,
-    "pomdp_9bit_compass": decode_pomdp_9bit_compass
+    "pomdp_9bit_compass": decode_pomdp_9bit_compass,
+    "pure_ego": decode_pure_egocentric_3x3,      
+    "pure_geo": decode_pure_geocentric_compass 
 }
 
 # The RAW dictionary stores the pure, uncompiled Python functions for the Batch Evaluator
 STATE_MAP_FUNCS_RAW = {
     "mdp": get_full_state_map_mdp,
     "3x3_base3_compass": get_full_state_map_pomdp,
-    "pomdp_9bit_compass": get_full_state_map_pomdp_9bit_compass 
+    "pomdp_9bit_compass": get_full_state_map_pomdp_9bit_compass,
+    "pure_ego": get_full_state_map_pure_ego,   
+    "pure_geo": get_full_state_map_pure_geo,
 }
 
 # The JIT dictionary compiles them on-the-fly for the lightning-fast UI Slider
 STATE_MAP_FUNCS_JIT = {
     "mdp": jax.jit(get_full_state_map_mdp), 
     "3x3_base3_compass": jax.jit(get_full_state_map_pomdp),
-    "pomdp_9bit_compass": jax.jit(get_full_state_map_pomdp_9bit_compass)
+    "pomdp_9bit_compass": jax.jit(get_full_state_map_pomdp_9bit_compass),
+    "pure_ego": jax.jit(get_full_state_map_pure_ego), 
+    "pure_geo": jax.jit(get_full_state_map_pure_geo)
 }
