@@ -23,7 +23,9 @@ class AnalyticsDashboard(QtWidgets.QScrollArea):
             'Success Rate vs Density': pg.PlotWidget(title="Phase Transition: Success vs Density"),
             'Optimality Scatter': pg.PlotWidget(title="Optimality Gap Scatter"),
             'Efficiency Distribution': pg.PlotWidget(title="Path Efficiency Distribution"),
-            'Value Localization (Anderson)': pg.PlotWidget(title="Value Localization (Anderson Index)")
+            'Value Localization (Anderson)': pg.PlotWidget(title="Value Localization (Anderson Index)"),
+            'Anderson Localization (IPR)': pg.PlotWidget(title="Anderson Localization (IPR vs Density)"),
+            'Mean Squared Displacement': pg.PlotWidget(title="MSD (Spatial Spread vs Density)")
         }
 
         # Style and add them all, but HIDE them by default
@@ -77,6 +79,14 @@ class AnalyticsDashboard(QtWidgets.QScrollArea):
         if 'Value Localization (Anderson)' in active_lens_names:
             self._draw_localization_lens(self.lenses['Value Localization (Anderson)'])
             self.lenses['Value Localization (Anderson)'].show()
+        
+        if 'Anderson Localization (IPR)' in active_lens_names:
+            self._draw_ipr_lens(self.lenses['Anderson Localization (IPR)'])
+            self.lenses['Anderson Localization (IPR)'].show()
+
+        if 'Mean Squared Displacement' in active_lens_names:
+            self._draw_msd_lens(self.lenses['Mean Squared Displacement'])
+            self.lenses['Mean Squared Displacement'].show()
 
     # --- INDIVIDUAL LENS RENDERING LOGIC ---
 
@@ -173,3 +183,33 @@ class AnalyticsDashboard(QtWidgets.QScrollArea):
             
         plot.setLabel('bottom', 'Obstacle Density (p)')
         plot.setLabel('left', 'Localization Index (PR)')
+
+    def _draw_ipr_lens(self, plot):
+        """Draws the Anderson Localization transition."""
+        plot.addLegend(offset=(30, 30))
+        for i, run_id in enumerate(self.cached_runs):
+            # Get data for this specific agent across all datasets
+            agent_data = [self.cached_results[(run_id, ds)] for ds in self.cached_datasets]
+            agent_data.sort(key=lambda x: x['density']) # Sort by density for X-axis
+            
+            x = [d['density'] for d in agent_data]
+            
+            # --- THE FIX: Change d['pr'] to d['ipr'] ---
+            y = [d['ipr'] for d in agent_data] 
+            
+            color = pg.intColor(i)
+            plot.plot(x, y, pen=pg.mkPen(color, width=2), symbol='d', symbolBrush=color, name=run_id)
+        
+        plot.setLabel('left', 'IPR (1.0 = Fully Localized)')
+        plot.setLabel('bottom', 'Obstacle Density (p)')
+
+    def _draw_msd_lens(self, plot):
+        for i, run_id in enumerate(self.cached_runs):
+            agent_data = [self.cached_results[(run_id, ds)] for ds in self.cached_datasets]
+            agent_data.sort(key=lambda x: x['density'])
+            x = [d['density'] for d in agent_data]
+            y = [d['msd'] for d in agent_data] # Mean Squared Displacement
+            color = pg.intColor(i)
+            plot.plot(x, y, pen=pg.mkPen(color, width=2), symbol='o', name=run_id)
+        plot.setLabel('left', 'MSD <|r(t)-r(0)|^2>')
+        plot.setLabel('bottom', 'Obstacle Density (p)')

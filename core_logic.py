@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from functools import partial
-
+from jax import jit
 
 # ==========================================================
 # 1. STATE DECODERS (JAX-Pure)
@@ -232,3 +232,86 @@ STATE_MAP_FUNCS_JIT = {
     "pure_ego": jax.jit(get_full_state_map_pure_ego), 
     "pure_geo": jax.jit(get_full_state_map_pure_geo)
 }
+
+
+
+
+###############################################################################
+
+# --- 1. Transition Matrix Construction ---
+@partial(jax.jit, static_argnums=(2,))
+def compute_transition_matrix_batch(q_table, mazes, state_map_func):
+    """
+    Constructs a 256x256 transition matrix P for each maze in the batch.
+    Shape: (Batch, 256, 256)
+    """
+    batch_size = mazes.shape[0]
+    r_idx, c_idx = jnp.indices((16, 16))
+    source_states = (r_idx * 16 + c_idx).flatten() # 0 to 255
+    
+    # Get the action map for the grid
+    state_maps = jax.vmap(state_map_func)(mazes)
+    actions = jnp.argmax(q_table[state_maps], axis=-1) # (Batch, 16, 16)
+    actions_flat = actions.reshape(batch_size, -1)     # (Batch, 256)
+    
+    # Calculate target states for every cell
+    def get_targets(maze, acts):
+        dr = jnp.array([-1, 1, 0, 0])[acts]
+        dc = jnp.array([0, 0, -1, 1])[acts]
+        nr, nc = r_idx.flatten() + dr, c_idx.flatten() + dc
+        
+        # Physics: stay if hit wall
+        out = (nr < 0) | (nr >= 16) | (nc < 0) | (nc >= 16)
+        hit = out | (maze[jnp.clip(nr, 0, 15), jnp.clip(nc, 0, 15)] == 1)
+        
+        target_r = jnp.where(hit, r_idx.flatten(), nr)
+        target_c = jnp.where(hit, c_idx.flatten(), nc)
+        return target_r * 16 + target_c
+
+    target_states = jax.vmap(get_targets)(mazes, actions_flat) # (Batch, 256)
+    
+    # Create the sparse-style transition matrix P
+    # P[batch, i, target[i]] = 1
+    P = jnp.zeros((batch_size, 256, 256))
+    
+    # Advanced indexing to fill the matrix
+    batch_indices = jnp.arange(batch_size)[:, None]
+    state_indices = jnp.arange(256)[None, :]
+    P = P.at[batch_indices, state_indices, target_states].set(1.0)
+    
+    return P
+
+# --- 2. Inverse Participation Ratio (IPR) ---
+@jit
+def calculate_ipr_statistics(P_matrices, steps=512):
+    """
+    Evolves an initial probability distribution and calculates IPR.
+    """
+    batch_size = P_matrices.shape[0]
+    # Start all agents at (0,0) -> Index 0
+    v = jnp.zeros((batch_size, 256))
+    v = v.at[:, 0].set(1.0)
+    
+    # Power method: v_next = v @ P
+    def body(i, val):
+        return jnp.einsum('bi,bij->bj', val, P_matrices)
+    
+    # Evolve for 512 steps to reach steady state or loop
+    v_final = jax.lax.fori_loop(0, steps, body, v)
+    
+    # IPR = Sum of squared probabilities
+    ipr = jnp.sum(v_final**2, axis=-1)
+    return ipr
+
+# --- 3. Mean Squared Displacement (MSD) ---
+@jit
+def calculate_msd(rollout_results):
+    """
+    Computes MSD from JAX evaluate_dataset results.
+    rollout_results[0] and [1] are final_r and final_c.
+    """
+    final_r = rollout_results[0]
+    final_c = rollout_results[1]
+    # Displacement from (0,0)
+    squared_displacement = (final_r - 0)**2 + (final_c - 0)**2
+    return jnp.mean(squared_displacement)

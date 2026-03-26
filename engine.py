@@ -319,7 +319,7 @@ class AliosWindow(QtWidgets.QWidget):
         self.lens_list_widget = QtWidgets.QListWidget()
         
         # Populate the available lenses
-        for lens_name in['Success Rate vs Density', 'Optimality Scatter', 'Efficiency Distribution','Value Localization (Anderson)']:
+        for lens_name in['Success Rate vs Density', 'Optimality Scatter', 'Efficiency Distribution','Value Localization (Anderson)','Anderson Localization (IPR)','Mean Squared Displacement' ]:
             item = QtWidgets.QListWidgetItem(lens_name)
             item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
             item.setCheckState(QtCore.Qt.Checked) # Check them by default
@@ -672,7 +672,17 @@ class AliosWindow(QtWidgets.QWidget):
                 pr_scores = core_logic.calculate_localization_batch(q_table, mazes_jax, map_func)
                 avg_pr = np.mean(pr_scores)
                 # -------------------------
+
+                # --- NEW: PHYSICS CALCULATIONS ---
                 
+                # 1. Compute P matrix -> Evolve -> Calculate IPR
+                P_batch = core_logic.compute_transition_matrix_batch(q_table, mazes_jax, map_func)
+                ipr_batch = core_logic.calculate_ipr_statistics(P_batch)
+                avg_ipr = float(jnp.mean(ipr_batch))
+                
+                # 2. Mean Squared Displacement (MSD)
+                avg_msd = float(core_logic.calculate_msd(res))
+
                 # Extract Obstacle Density from filename (e.g., P0100 -> 0.1)
                 try:
                     density = float(ds_name.split('_P')[1].split('_')[0]) / 1000.0
@@ -680,12 +690,15 @@ class AliosWindow(QtWidgets.QWidget):
                     density = 0.0
 
                 # Store all raw data for the Dashboard to plot
+                # --- STORE IN RESULTS ---
                 master_results[(run_id, ds_name)] = {
                     'success': success_rate,
-                    'pr': avg_pr,
                     'density': density,
-                    'reached_mask': reached,
-                    'steps': steps,
+                    'pr': avg_pr, 
+                    'ipr': avg_ipr,      # Key is 'ipr'
+                    'msd': avg_msd,      # Key is 'msd'
+                    'reached_mask': np.array(res[4]),
+                    'steps': np.array(res[2]),
                     'oracle_steps': oracle_v_start
                 }
 
