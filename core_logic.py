@@ -269,6 +269,9 @@ def compute_transition_matrix_batch(q_table, mazes, state_map_func):
         return target_r * 16 + target_c
 
     target_states = jax.vmap(get_targets)(mazes, actions_flat) # (Batch, 256)
+    # If a state is the Goal (255), it must always transition to itself
+    goal_state_id = 15 * 16 + 15
+    target_states = target_states.at[:, goal_state_id].set(goal_state_id)
     
     # Create the sparse-style transition matrix P
     # P[batch, i, target[i]] = 1
@@ -282,26 +285,33 @@ def compute_transition_matrix_batch(q_table, mazes, state_map_func):
     return P
 
 # --- 2. Inverse Participation Ratio (IPR) ---
-@jit
+@jax.jit
 def calculate_ipr_statistics(P_matrices, steps=512):
-    """
-    Evolves an initial probability distribution and calculates IPR.
-    """
     batch_size = P_matrices.shape[0]
-    # Start all agents at (0,0) -> Index 0
-    v = jnp.zeros((batch_size, 256))
-    v = v.at[:, 0].set(1.0)
+    v_init = jnp.zeros((batch_size, 256))
+    v_init = v_init.at[:, 0].set(1.0)
     
-    # Power method: v_next = v @ P
-    def body(i, val):
-        return jnp.einsum('bi,bij->bj', val, P_matrices)
+    # Define the window
+    window_start = 400
+    # Calculate exact number of steps that will be summed
+    # If steps=512 and start=400, indices are 401...511, which is 111 steps
+    num_summed_steps = steps - window_start - 1 
+
+    def body(i, carry):
+        v_curr, v_sum = carry
+        v_next = jnp.einsum('bi,bij->bj', v_curr, P_matrices)
+        # Summing from i=401 to 511
+        is_steady = i > window_start 
+        v_sum = jnp.where(is_steady, v_sum + v_next, v_sum)
+        return (v_next, v_sum)
+
+    _, v_total = jax.lax.fori_loop(0, steps, body, (v_init, jnp.zeros_like(v_init)))
     
-    # Evolve for 512 steps to reach steady state or loop
-    v_final = jax.lax.fori_loop(0, steps, body, v)
+    # Use the dynamic denominator
+    v_avg = v_total / num_summed_steps
     
     # IPR = Sum of squared probabilities
-    ipr = jnp.sum(v_final**2, axis=-1)
-    return ipr
+    return jnp.sum(v_avg**2, axis=-1)
 
 # --- 3. Mean Squared Displacement (MSD) ---
 @jit
