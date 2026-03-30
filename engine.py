@@ -504,9 +504,9 @@ class AliosWindow(QtWidgets.QWidget):
         self.current_mazes = np.load(os.path.join("data_jax", ds_name))
         self.current_mazes_jax = jnp.array(self.current_mazes)
         
+        # 1. Load Oracle VI (Values & Actions)
         vi_filename = ds_name.replace(".npy", "_VI_solved.npz")
         vi_path = os.path.join("data_jax", "value_iteration", vi_filename)
-        
         if os.path.exists(vi_path):
             with np.load(vi_path) as data:
                 self.current_vi_policies = data['policy']
@@ -514,6 +514,17 @@ class AliosWindow(QtWidgets.QWidget):
         else:
             self.current_vi_policies = None
             self.current_vi_values = None
+
+        # --- 2. NEW: Load Oracle Q-Values ---
+        ql_filename = ds_name.replace(".npy", "_QL_expert.npz")
+        ql_path = os.path.join("data_jax", "q-learning-optimal", ql_filename)
+        if os.path.exists(ql_path):
+            with np.load(ql_path) as data:
+                # Shape is (1000, 256, 4)
+                self.current_oracle_q_batch = data['q_table'] 
+        else:
+            self.current_oracle_q_batch = None
+        # ------------------------------------
 
         self._refresh_rollout_caches() 
         self.update_display()
@@ -738,20 +749,35 @@ class AliosWindow(QtWidgets.QWidget):
         maze_numpy = self.current_mazes[idx]
 
         # --- 3. DETERMINE THE ACTIVE "EYES" AND "BRAIN" ---
-        # Priority: Right Agent > Left Agent > Default MDP
+        idx = self.get_real_maze_idx()
+        maze_jax = self.current_mazes_jax[idx]
+        maze_numpy = self.current_mazes[idx]
+
+        # Priority: Right Panel -> Left Panel
+        # We check if the panel is an Agent, OR if it's an Oracle and we have the Q-batch loaded
         if self.right_type == 'agent' and self.right_q is not None:
             active_jit = self.right_decoder_jit
             active_scalar = self.right_decoder
             active_q = self.right_q
+        elif self.right_type == 'oracle' and self.current_oracle_q_batch is not None:
+            active_jit = core_logic.STATE_MAP_FUNCS_JIT['mdp']
+            active_scalar = core_logic.decode_mdp
+            active_q = self.current_oracle_q_batch[idx] # Get Q-table for THIS maze!
         elif self.left_type == 'agent' and self.left_q is not None:
             active_jit = self.left_decoder_jit
             active_scalar = self.left_decoder
             active_q = self.left_q
+        elif self.left_type == 'oracle' and self.current_oracle_q_batch is not None:
+            active_jit = core_logic.STATE_MAP_FUNCS_JIT['mdp']
+            active_scalar = core_logic.decode_mdp
+            active_q = self.current_oracle_q_batch[idx] # Get Q-table for THIS maze!
         else:
+            # Absolute Fallback (No Q-values available)
             active_jit = core_logic.STATE_MAP_FUNCS_JIT['mdp']
             active_scalar = core_logic.decode_mdp
             active_q = None
 
+            
         if active_jit is not None:
             # --- 4. THE FIRST-CLICK FIX: RECALCULATE STATE ID ---
             # We calculate the ID here in the engine using the active agent's logic.

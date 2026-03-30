@@ -172,7 +172,7 @@ class AnalyticsDashboard(QtWidgets.QScrollArea):
     def _draw_localization_lens(self, plot):
         plot.addLegend(offset=(30, 30))
         for i, run_id in enumerate(self.cached_runs):
-            agent_data = [self.cached_results[(run_id, ds)] for ds in self.cached_datasets]
+            agent_data = [self.cached_results[(run_id, ds)] for ds in self.cached_datasets] 
             agent_data.sort(key=lambda x: x['density'])
             
             x = [d['density'] for d in agent_data]
