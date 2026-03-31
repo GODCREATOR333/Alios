@@ -59,6 +59,20 @@ def decode_pure_geocentric_compass(maze, r, c):
     return ((dr + 1) * 3 + (dc + 1)).astype(jnp.int32)
 
 
+def decode_ego_persistence(maze, r, c, last_action=-1):
+    """
+    Heading-aware Egocentric: 3x3 window + last_action.
+    Total States: 512 (window) * 5 (last_actions: -1, 0, 1, 2, 3) = 2,560.
+    """
+    # 1. Reuse your existing 512-state window logic
+    win_id = decode_pure_egocentric_3x3(maze, r, c)
+    
+    # 2. Map last_action to memory_id (0-4)
+    # -1 -> 0 (None), 0 -> 1 (UP), 1 -> 2 (DOWN), 2 -> 3 (LEFT), 3 -> 4 (RIGHT)
+    memory_id = jnp.int32(last_action + 1)
+    
+    return (win_id * 5 + memory_id).astype(jnp.int32)
+
 # ==========================================================
 # 2. VECTORIZED STATE MAPPERS (JIT)
 # ==========================================================
@@ -83,6 +97,13 @@ def get_full_state_map_pure_ego(maze):
 def get_full_state_map_pure_geo(maze):
     r_idx, c_idx = jnp.indices((16, 16))
     return jax.vmap(jax.vmap(decode_pure_geocentric_compass, in_axes=(None, 0, 0)), in_axes=(None, 0, 0))(maze, r_idx, c_idx)
+
+def get_full_state_map_ego_persistence(maze):
+    """Vectorized mapper for the 2,560-state model."""
+    r_idx, c_idx = jnp.indices((16, 16))
+    # We visualize the static UI assuming 'No Momentum' (last_action = -1)
+    # This shows the agent's pure local reflexes.
+    return jax.vmap(jax.vmap(lambda ri, ci: decode_ego_persistence(maze, ri, ci, -1)))(r_idx, c_idx)
 # ==========================================================
 # 3. STATISTICAL EVALUATOR
 # ==========================================================
@@ -212,7 +233,8 @@ DECODERS = {
     "3x3_base3_compass": decode_pomdp_3x3_base3,
     "pomdp_9bit_compass": decode_pomdp_9bit_compass,
     "pure_ego": decode_pure_egocentric_3x3,      
-    "pure_geo": decode_pure_geocentric_compass 
+    "pure_geo": decode_pure_geocentric_compass,
+    "ego_persistence": decode_ego_persistence,
 }
 
 # The RAW dictionary stores the pure, uncompiled Python functions for the Batch Evaluator
@@ -222,6 +244,7 @@ STATE_MAP_FUNCS_RAW = {
     "pomdp_9bit_compass": get_full_state_map_pomdp_9bit_compass,
     "pure_ego": get_full_state_map_pure_ego,   
     "pure_geo": get_full_state_map_pure_geo,
+    "ego_persistence": get_full_state_map_ego_persistence,
 }
 
 # The JIT dictionary compiles them on-the-fly for the lightning-fast UI Slider
@@ -230,7 +253,8 @@ STATE_MAP_FUNCS_JIT = {
     "3x3_base3_compass": jax.jit(get_full_state_map_pomdp),
     "pomdp_9bit_compass": jax.jit(get_full_state_map_pomdp_9bit_compass),
     "pure_ego": jax.jit(get_full_state_map_pure_ego), 
-    "pure_geo": jax.jit(get_full_state_map_pure_geo)
+    "pure_geo": jax.jit(get_full_state_map_pure_geo),
+    "ego_persistence": jax.jit(get_full_state_map_ego_persistence)
 }
 
 
