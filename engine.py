@@ -6,11 +6,96 @@ import pyqtgraph as pg
 from PyQt5 import QtWidgets, QtCore, QtGui
 from analytics_view import AnalyticsDashboard
 import jax
+from PyQt5.QtCore import QThread, pyqtSignal
 
 # Local Imports
 from viewer_2d import MazeView
 import db_manager
 import core_logic
+import state_sandbox
+
+class ExperimentWorker(QtCore.QThread):
+    # Signals to communicate back to the UI
+    progress = QtCore.pyqtSignal(int, int) # (Current task, Total tasks)
+    finished = QtCore.pyqtSignal(dict)
+
+    def __init__(self, selected_runs, selected_datasets):
+        super().__init__()
+        self.selected_runs = selected_runs
+        self.selected_datasets = selected_datasets
+
+    def run(self):
+        """This runs on a separate CPU thread. No UI hanging!"""
+        master_results = {}
+        total_tasks = len(self.selected_runs) * len(self.selected_datasets)
+        current_task = 0
+
+        for ds_name in self.selected_datasets:
+            # 1. Load Dataset
+            ds_path = os.path.join("data_jax", ds_name)
+            mazes_jax = jnp.array(np.load(ds_path))
+            
+            # 2. Fetch Oracle
+            vi_filename = ds_name.replace(".npy", "_VI_solved.npz")
+            vi_path = os.path.join("data_jax", "value_iteration", vi_filename)
+            oracle_v_start = None
+            if os.path.exists(vi_path):
+                with np.load(vi_path) as vi_data:
+                    oracle_v_start = np.abs(vi_data['values'][:, 0, 0])
+
+            for run_id in self.selected_runs:
+                details = db_manager.get_run_details(run_id)
+                if not details: continue
+                
+                q_table = jnp.array(np.load(details['path']))
+                r_key = details['state_repr']
+                map_func = core_logic.STATE_MAP_FUNCS_RAW.get(r_key, core_logic.STATE_MAP_FUNCS_RAW['mdp'])
+
+                # --- THE HEAVY PHYSICS (This is what usually hangs the UI) ---
+                # 1. Rollouts
+                res = core_logic.evaluate_dataset(q_table, mazes_jax, map_func)
+                
+                # 2. Participation Ratio (Localization)
+                pr_scores = core_logic.calculate_localization_batch(q_table, mazes_jax, map_func)
+                
+                # 3. Transition Matrix & IPR
+                P_batch = core_logic.compute_transition_matrix_batch(q_table, mazes_jax, map_func)
+                ipr_batch = core_logic.calculate_ipr_statistics(P_batch)
+                
+                # 4. MSD
+                avg_msd = float(core_logic.calculate_msd(res))
+
+                # 5. Aggregate
+                try: density = float(ds_name.split('_P')[1].split('_')[0]) / 1000.0
+                except: density = 0.0
+
+                try: 
+                    parts = ds_name.split('_')
+                    density = float(parts[1].replace('P', '')) / 1000.0
+                    # Get the tag (e.g., "shapes", "random") from the filename
+                    category = parts[-1].replace('.npy', '') 
+                except: 
+                    density = 0.0
+                    category = "empty"
+
+                master_results[(run_id, ds_name)] = {
+                    'success': (np.sum(res[4]) / len(res[4])) * 100,
+                    'density': density,
+                    'category': category,
+                    'pr': np.mean(pr_scores), 
+                    'ipr': float(jnp.mean(ipr_batch)),      
+                    'msd': avg_msd,      
+                    'reached_mask': np.array(res[4]),
+                    'steps': np.array(res[2]),
+                    'oracle_steps': oracle_v_start
+                }
+
+                # Report progress back to the UI
+                current_task += 1
+                self.progress.emit(current_task, total_tasks)
+        
+        # Send the whole results dictionary back when done
+        self.finished.emit(master_results)
 
 class AliosWindow(QtWidgets.QWidget):
     def __init__(self):
@@ -35,7 +120,7 @@ class AliosWindow(QtWidgets.QWidget):
         self.left_decoder_raw = None 
         self.left_rollout_cache = None
 
-        self.right_type = 'agent'
+        self.right_type = 'oracle'
         self.right_q = None
         self.right_decoder = None
         self.right_decoder_jit = None
@@ -49,8 +134,14 @@ class AliosWindow(QtWidgets.QWidget):
         # --- 4. Startup Sequences ---
         self.refresh_runs()
         self.scan_datasets()
+        
+        # --5. Load policies on both panels --
+        self.left_selector.setCurrentIndex(0)
+        self.right_selector.setCurrentIndex(0)
+        self.on_left_selected()
+        self.on_right_selected()
 
-        # --5. Sorted Map ---
+        # --6. Sorted Map ---
         self.right_sort_map = np.arange(1000) # Default 1:1 mapping
         self.sort_enabled = False
 
@@ -473,7 +564,7 @@ class AliosWindow(QtWidgets.QWidget):
         if details and os.path.exists(details['path']):
             r_key = details['state_repr']
             q = jnp.array(np.load(details['path']))
-            dec = core_logic.DECODERS.get(r_key, core_logic.decode_mdp)
+            dec = core_logic.DECODERS.get(r_key, core_logic.DECODERS['mdp'])
             dec_jit = core_logic.STATE_MAP_FUNCS_JIT.get(r_key, core_logic.STATE_MAP_FUNCS_JIT['mdp'])
             dec_raw = core_logic.STATE_MAP_FUNCS_RAW.get(r_key, core_logic.STATE_MAP_FUNCS_RAW['mdp']) # NEW
             return 'agent', q, dec, dec_jit, dec_raw
@@ -489,11 +580,14 @@ class AliosWindow(QtWidgets.QWidget):
     def on_right_selected(self):
         val = self.right_selector.currentText()
         self.right_type, self.right_q, self.right_decoder, self.right_decoder_jit, self.right_decoder_raw = self._load_selection(val)
+        
         if val != "Oracle (Value Iteration)":
             details = db_manager.get_run_details(val)
-            if details: self.config_display.setText(json.dumps(details['config'], indent=4))
+            if details:
+                self.config_display.setText(json.dumps(details['config'], indent=4))
         else:
             self.config_display.setText("Oracle (Value Iteration) loaded.")
+        
         self._refresh_rollout_caches() # Cache!
         self.update_display()
 
@@ -623,105 +717,54 @@ class AliosWindow(QtWidgets.QWidget):
         self.run_test_btn.setText("Run Batch Test on Right Panel")
 
     def execute_benchmarks(self):
-        """Orchestrates the (Agents x Datasets) statistical experiment."""
-        # 1. Gather Selected Agents from the list checkboxes
+        """Collects settings and launches the background worker."""
+        # 1. Gather Selection
         selected_runs = [self.agent_list_widget.item(i).text() 
                          for i in range(self.agent_list_widget.count()) 
                          if self.agent_list_widget.item(i).checkState() == QtCore.Qt.Checked]
         
-        # 2. Gather Selected Datasets from the list checkboxes
         selected_datasets = [self.dataset_list_widget.item(i).text() 
                              for i in range(self.dataset_list_widget.count()) 
                              if self.dataset_list_widget.item(i).checkState() == QtCore.Qt.Checked]
 
         if not selected_runs or not selected_datasets:
-            self.stats_display.setText("<b style='color:red;'>Error:</b> Select at least one agent and one dataset.")
+            self.stats_display.setText("<b style='color:red;'>Error:</b> Select agents and datasets.")
             return
 
-        # UI Feedback to show work is happening
-        self.btn_run_benchmarks.setText("Processing Experiment...")
+        # 2. UI Visual Feedback (Disable button so user doesn't click twice)
         self.btn_run_benchmarks.setEnabled(False)
-        QtWidgets.QApplication.processEvents()
+        self.btn_run_benchmarks.setText("Starting Analysis...")
 
-        master_results = {}
-
-        # 3. The Grand Loop: Datasets x Agents
-        for ds_name in selected_datasets:
-            # Load Dataset and Oracle for this specific file
-            ds_path = os.path.join("data_jax", ds_name)
-            mazes_jax = jnp.array(np.load(ds_path))
-            
-            # Fetch Oracle for steps comparison
-            vi_filename = ds_name.replace(".npy", "_VI_solved.npz")
-            vi_path = os.path.join("data_jax", "value_iteration", vi_filename)
-            oracle_v_start = None
-            if os.path.exists(vi_path):
-                with np.load(vi_path) as vi_data:
-                    # Value at (0,0) is negative path length
-                    oracle_v_start = np.abs(vi_data['values'][:, 0, 0])
-
-            for run_id in selected_runs:
-                details = db_manager.get_run_details(run_id)
-                if not details: continue
-                
-                # Load Agent Data
-                q_table = jnp.array(np.load(details['path']))
-                r_key = details['state_repr']
-                
-                # Use RAW mapper for JAX Batch Evaluation
-                map_func = core_logic.STATE_MAP_FUNCS_RAW.get(r_key, core_logic.STATE_MAP_FUNCS_RAW['mdp'])
-
-                # Run High-Speed JAX Evaluation
-                res = core_logic.evaluate_dataset(q_table, mazes_jax, map_func)
-                reached = np.array(res[4])
-                steps = np.array(res[2])
-                
-                # Calculate Success Rate
-                success_rate = (np.sum(reached) / len(reached)) * 100
-
-                # --- NEW PHYSICS PROBE ---
-                pr_scores = core_logic.calculate_localization_batch(q_table, mazes_jax, map_func)
-                avg_pr = np.mean(pr_scores)
-                # -------------------------
-
-                # --- NEW: PHYSICS CALCULATIONS ---
-                
-                # 1. Compute P matrix -> Evolve -> Calculate IPR
-                P_batch = core_logic.compute_transition_matrix_batch(q_table, mazes_jax, map_func)
-                ipr_batch = core_logic.calculate_ipr_statistics(P_batch)
-                avg_ipr = float(jnp.mean(ipr_batch))
-                
-                # 2. Mean Squared Displacement (MSD)
-                avg_msd = float(core_logic.calculate_msd(res))
-
-                # Extract Obstacle Density from filename (e.g., P0100 -> 0.1)
-                try:
-                    density = float(ds_name.split('_P')[1].split('_')[0]) / 1000.0
-                except:
-                    density = 0.0
-
-                # Store all raw data for the Dashboard to plot
-                # --- STORE IN RESULTS ---
-                master_results[(run_id, ds_name)] = {
-                    'success': success_rate,
-                    'density': density,
-                    'pr': avg_pr, 
-                    'ipr': avg_ipr,      # Key is 'ipr'
-                    'msd': avg_msd,      # Key is 'msd'
-                    'reached_mask': np.array(res[4]),
-                    'steps': np.array(res[2]),
-                    'oracle_steps': oracle_v_start
-                }
-
-        # --- THE MODULAR HANDOVER ---
-        # 1. Save data to Cache
-        self.plot_container.set_data_cache(master_results, selected_runs, selected_datasets)
+        # 3. Create and Start the Worker
+        self.worker = ExperimentWorker(selected_runs, selected_datasets)
         
-        # 2. Trigger the UI to draw whatever is currently checked
+        # Connect the worker's signals to UI update functions
+        self.worker.progress.connect(self._on_benchmark_progress)
+        self.worker.finished.connect(self._on_benchmark_finished)
+        
+        self.worker.start() # This launches the 'run' method in a NEW thread!
+
+    def _on_benchmark_progress(self, current, total):
+        """Updates the button text as tasks complete."""
+        self.btn_run_benchmarks.setText(f"Processing: {current} / {total} Tasks")
+
+    def _on_benchmark_finished(self, results):
+        """Runs when the worker is 100% done."""
+        # We need the original selections for the legend
+        selected_runs = [self.agent_list_widget.item(i).text() for i in range(self.agent_list_widget.count()) if self.agent_list_widget.item(i).checkState() == QtCore.Qt.Checked]
+        selected_datasets = [self.dataset_list_widget.item(i).text() for i in range(self.dataset_list_widget.count()) if self.dataset_list_widget.item(i).checkState() == QtCore.Qt.Checked]
+
+        # 1. Hand data to the Analytics Lab
+        self.plot_container.set_data_cache(results, selected_runs, selected_datasets)
+        
+        # 2. Trigger visual redraw
         self.on_lens_toggled(None)
         
-        self.btn_run_benchmarks.setText("RUN AGENT COMPARISON")
+        # 3. Reset UI
         self.btn_run_benchmarks.setEnabled(True)
+        self.btn_run_benchmarks.setText("RUN AGENT COMPARISON")
+        self.stats_display.setText("<b style='color:#00FF00;'>Experiment Complete.</b>")
+
 
     def get_real_maze_idx(self):
         """Translates the current slider rank into the actual dataset index."""
@@ -761,7 +804,7 @@ class AliosWindow(QtWidgets.QWidget):
             active_q = self.right_q
         elif self.right_type == 'oracle' and self.current_oracle_q_batch is not None:
             active_jit = core_logic.STATE_MAP_FUNCS_JIT['mdp']
-            active_scalar = core_logic.decode_mdp
+            active_scalar = core_logic.DECODERS['mdp']
             active_q = self.current_oracle_q_batch[idx] # Get Q-table for THIS maze!
         elif self.left_type == 'agent' and self.left_q is not None:
             active_jit = self.left_decoder_jit
@@ -796,13 +839,11 @@ class AliosWindow(QtWidgets.QWidget):
 
             # Update ALL 6 tabs with the fresh map and calculated State ID
             for v in [self.view_left_policy, self.view_left_values, self.view_left_entropy]:
-                v.set_state_map(shared_map_np)
-                v.highlight_aliased_states(state_id, blue_rgba)
+                v.highlight_aliased_states(state_id, shared_map_np, maze_numpy, blue_rgba)
             
             for v in [self.view_right_policy, self.view_right_values, self.view_right_entropy]:
-                v.set_state_map(shared_map_np)
-                v.highlight_aliased_states(state_id, gold_rgba)
-
+                v.highlight_aliased_states(state_id, shared_map_np, maze_numpy, gold_rgba)
+                
             # 6. MATH & TRAJECTORY (Only if we have an agent brain)
             if active_q is not None:
                 q_vals = active_q[state_id]
@@ -902,24 +943,18 @@ class AliosWindow(QtWidgets.QWidget):
             # Reset views and clear previous highlights
             for v in views:
                 v.set_maze(maze)
-                # IMPORTANT: We give every view the state map for the probe
-                if smap is not None:
-                    v.set_state_map(smap)
 
             # Draw the layers if data exists
             if act is not None:
                 # DIVERGENCE: Right panel compares itself to Left Panel (L_act)
                 comparison_baseline = L_act if name == 'Right' else None
                 
-                views[0].draw_policy_vectorized(maze, act, oracle_actions=comparison_baseline, base_color=color)
+                views[0].draw_policy(maze, act, comparison_grid=comparison_baseline, color=color)
                 views[1].set_heatmap(maze, val)
                 views[2].set_heatmap(maze, ent)
             else:
-                # Tell the viewer to hide all arrows
-                views[0].draw_policy_vectorized(maze, np.zeros((16,16)), base_color=color)
-                # Ensure heatmap images are cleared
-                views[1].img.clear()
-                views[2].img.clear()
+                for v in views:
+                    v.clear_visuals(keep_image=True)
 
             # 4. Update the titles (Scoreboard)
             if p_type == 'oracle':

@@ -5,211 +5,189 @@ from PyQt5.QtCore import pyqtSignal
 
 class AnalyticsDashboard(QtWidgets.QScrollArea):
     mazeSelected = pyqtSignal(str, int)
+
     def __init__(self):
         super().__init__()
         self.setWidgetResizable(True)
         self.setFrameShape(QtWidgets.QFrame.NoFrame)
-        self.setStyleSheet("background-color: #121212;")
+        
+        # --- Ultra-Clean White/Glass Scrollbar ---
+        self.setStyleSheet("""
+            QScrollArea { background-color: #0b0b0b; border: none; }
+            QScrollBar:vertical {
+                border: none;
+                background: rgba(255, 255, 255, 0.05);
+                width: 8px;
+                margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background: #e0e0e0;
+                min-height: 40px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover { background: #ffffff; }
+        """)
 
-        # Container for the vertically stacked plots
         self.container = QtWidgets.QWidget()
+        self.container.setStyleSheet("background-color: #0b0b0b;")
         self.layout = QtWidgets.QVBoxLayout(self.container)
-        self.layout.setSpacing(20)
-        self.layout.setContentsMargins(20, 20, 20, 20)
+        self.layout.setSpacing(60)
+        self.layout.setContentsMargins(60, 40, 60, 60)
 
-        # --- THE LENS REGISTRY ---
-        # Every new analysis tool goes into this dictionary
-        self.lenses = {
-            'Success Rate vs Density': pg.PlotWidget(title="Phase Transition: Success vs Density"),
-            'Optimality Scatter': pg.PlotWidget(title="Optimality Gap Scatter"),
-            'Efficiency Distribution': pg.PlotWidget(title="Path Efficiency Distribution"),
-            'Value Localization (Anderson)': pg.PlotWidget(title="Value Localization (Anderson Index)"),
-            'Anderson Localization (IPR)': pg.PlotWidget(title="Anderson Localization (IPR vs Density)"),
-            'Mean Squared Displacement': pg.PlotWidget(title="MSD (Spatial Spread vs Density)")
-        }
+        # --- Scientific Gradient Palettes ---
+        # Each agent gets a "Family" of 3 shades
+        self.palettes = [
+            ['#1f77b4', '#4aa3df', '#a2d2ff'], # Blues
+            ['#ff7f0e', '#ffbb78', '#ffe9a6'], # Oranges
+            ['#2ca02c', '#98df8a', '#c1f0c1'], # Greens
+            ['#d62728', '#ff9896', '#ffccd5'], # Reds
+            ['#9467bd', '#c5b0d5', '#e8def1'], # Purples
+            ['#00ced1', '#7fffd4', '#e0ffff'], # Cyans
+        ]
 
-        # Style and add them all, but HIDE them by default
-        for name, plot in self.lenses.items():
-            plot.setMinimumHeight(350) # Big enough to see clearly
-            plot.showGrid(x=True, y=True, alpha=0.3)
-            plot.getAxis('left').setPen('#888')
-            plot.getAxis('bottom').setPen('#888')
-            self.layout.addWidget(plot)
-            plot.hide()
-
+        self.lenses = {}
+        self._init_plots()
+        
         self.layout.addStretch()
         self.setWidget(self.container)
-
-        # --- THE DATA CACHE ---
         self.cached_results = None
-        self.cached_runs = []
-        self.cached_datasets =[]
 
-
+    def _init_plots(self):
+        configs = [
+            ('Success Rate vs Density', "Phase Transition: Navigation Integrity", "Obstacle Density (ρ)", "Success Rate (%)"),
+            ('Optimality Scatter', "Path Length Analysis", "Optimal Steps (Oracle)", "Agent Steps"),
+            ('Anderson Localization (IPR)', "Agent State Localization (Anderson Index)", "Obstacle Density (ρ)", "IPR (Lower = More Extended)"),
+            ('Mean Squared Displacement', "Spatial Diffusion (MSD Profile)", "Obstacle Density (ρ)", "MSD <Δr²>")
+        ]
+        
+        for key, title, x, y in configs:
+            p = pg.PlotWidget()
+            p.setMinimumHeight(500)
+            
+            # Remove default border and style axes
+            p.showGrid(x=True, y=True, alpha=0.1)
+            p.getAxis('bottom').setLabel(x, color='#777', size='12pt')
+            p.getAxis('left').setLabel(y, color='#777', size='12pt')
+            
+            # Title Styling: Large, Clean, Muted White
+            p.setTitle(title, color='#eee', size='14pt')
+            
+            p.setAntialiasing(True)
+            self.lenses[key] = p
+            self.layout.addWidget(p)
+            p.hide()
 
     def set_data_cache(self, results, run_ids, ds_names):
-        """Stores the massive JAX rollout data in memory."""
         self.cached_results = results
         self.cached_runs = run_ids
         self.cached_datasets = ds_names
 
     def update_active_lenses(self, active_lens_names):
-        """Instantly hides/shows/redraws plots based on UI checkboxes."""
-        if not self.cached_results: 
-            return
+        if not self.cached_results: return
+        for name, plot in self.lenses.items():
+            if name in active_lens_names:
+                plot.show()
+                plot.clear()
+                # Legend with a soft glass background
+                plot.addLegend(offset=(20, 20), labelTextColor="#ccc", brush=(20,20,20,180), pen=(100,100,100))
+                self._render_lens(name, plot)
+            else:
+                plot.hide()
 
-        # Hide all first
-        for plot in self.lenses.values():
-            plot.hide()
-            plot.clear() # Clear old data
+    def _render_lens(self, name, plot):
+        if name == 'Success Rate vs Density': self._draw_success(plot)
+        elif name == 'Optimality Scatter': self._draw_optimality(plot)
+        elif name == 'Anderson Localization (IPR)': self._draw_ipr(plot)
+        elif name == 'Mean Squared Displacement': self._draw_msd(plot)
 
-        # Render and show only the checked ones
-        if 'Success Rate vs Density' in active_lens_names:
-            self._draw_success_lens(self.lenses['Success Rate vs Density'])
-            self.lenses['Success Rate vs Density'].show()
-            
-        if 'Optimality Scatter' in active_lens_names:
-            self._draw_optimality_lens(self.lenses['Optimality Scatter'])
-            self.lenses['Optimality Scatter'].show()
-
-        if 'Efficiency Distribution' in active_lens_names:
-            self._draw_efficiency_lens(self.lenses['Efficiency Distribution'])
-            self.lenses['Efficiency Distribution'].show()
-
-        if 'Value Localization (Anderson)' in active_lens_names:
-            self._draw_localization_lens(self.lenses['Value Localization (Anderson)'])
-            self.lenses['Value Localization (Anderson)'].show()
-        
-        if 'Anderson Localization (IPR)' in active_lens_names:
-            self._draw_ipr_lens(self.lenses['Anderson Localization (IPR)'])
-            self.lenses['Anderson Localization (IPR)'].show()
-
-        if 'Mean Squared Displacement' in active_lens_names:
-            self._draw_msd_lens(self.lenses['Mean Squared Displacement'])
-            self.lenses['Mean Squared Displacement'].show()
-
-    # --- INDIVIDUAL LENS RENDERING LOGIC ---
-
-    def _draw_success_lens(self, plot):
-        plot.addLegend(offset=(30, 30))
+    def _draw_success(self, plot):
         for i, run_id in enumerate(self.cached_runs):
+            palette = self.palettes[i % len(self.palettes)]
             agent_data = [self.cached_results[(run_id, ds)] for ds in self.cached_datasets]
-            agent_data.sort(key=lambda x: x['density'])
-            x = [d['density'] for d in agent_data]
-            y = [d['success'] for d in agent_data]
-            color = pg.intColor(i)
-            plot.plot(x, y, pen=pg.mkPen(color, width=2), symbol='o', symbolBrush=color, name=run_id)
-        
-        plot.addLine(x=0.592, pen=pg.mkPen('r', style=QtCore.Qt.DashLine, width=2)) # Percolation Threshold
-        plot.setLabel('bottom', 'Obstacle Density (p)')
-        plot.setLabel('left', 'Success Rate (%)')
-
-    def _draw_optimality_lens(self, plot):
-        """Redraws the scatter plot and makes points interactive."""
-        plot.addLegend(offset=(30, 30))
-        
-        for i, run_id in enumerate(self.cached_runs):
-            color = pg.intColor(i, alpha=150)
-            for ds in self.cached_datasets:
-                d = self.cached_results[(run_id, ds)]
-                if d['oracle_steps'] is not None:
-                    reached = d['reached_mask']
-                    
-                    # Create a ScatterPlotItem for high performance and clicking
-                    scatter = pg.ScatterPlotItem(
-                        size=8, pen=pg.mkPen(None), brush=color, 
-                        name=f"{run_id} ({ds})", hoverable=True
-                    )
-                    
-                    # Store indices and dataset names in the 'data' field of each point
-                    indices = np.where(reached)[0]
-                    points = []
-                    for idx_in_batch in range(len(indices)):
-                        actual_idx = indices[idx_in_batch]
-                        points.append({
-                            'pos': (d['oracle_steps'][actual_idx], d['steps'][actual_idx]),
-                            'data': (ds, int(actual_idx)) # (Dataset name, Maze index)
-                        })
-                    
-                    scatter.addPoints(points)
-                    plot.addItem(scatter)
-                    
-                    # Connect the click signal for this specific agent's dots
-                    scatter.sigClicked.connect(self._on_scatter_clicked)
-        
-        plot.plot([0, 100], [0, 100], pen=pg.mkPen('w', style=QtCore.Qt.DashLine))
-        plot.setLabel('bottom', 'Oracle Path Length')
-        plot.setLabel('left', 'Agent Path Length')
-
-    def _on_scatter_clicked(self, scatter_item, points):
-        """Handles clicking a dot in the scatter plot."""
-        # Use len() to check for empty lists to avoid NumPy ambiguity errors
-        if len(points) == 0: 
-            return
+            categories = sorted(list(set([d['category'] for d in agent_data])))
             
-        # Get the metadata from the FIRST point clicked
-        try:
-            dataset_name, maze_idx = points[0].data()
-            # Emit signal to the engine
-            self.mazeSelected.emit(dataset_name, int(maze_idx))
-        except Exception as e:
-            print(f"Jump Error: {e}")
+            for j, cat in enumerate(categories):
+                cat_color = palette[j % len(palette)]
+                cat_data = sorted([d for d in agent_data if d['category'] == cat], key=lambda x: x['density'])
+                
+                x = [d['density'] for d in cat_data]
+                y = [d['success'] for d in cat_data]
+                
+                # --- THE GLOW EFFECT ---
+                # Draw a faint thicker line behind the main line
+                glow_pen = pg.mkPen(cat_color, width=6)
+                glow_pen.setCapStyle(QtCore.Qt.RoundCap)
+                glow_color = pg.mkColor(cat_color)
+                glow_color.setAlpha(40)
+                plot.plot(x, y, pen=pg.mkPen(glow_color, width=8))
 
-    def _draw_efficiency_lens(self, plot):
+                # --- THE MAIN DATA LINE ---
+                line_name = f"{run_id} | {cat.capitalize()}"
+                plot.plot(x, y, pen=pg.mkPen(cat_color, width=2.5), 
+                          symbol='o', symbolSize=8, symbolBrush=cat_color, 
+                          symbolPen=pg.mkPen(None), name=line_name)
+
+        # Percolation Reference Line
+        ref = pg.InfiniteLine(pos=0.592, angle=90, pen=pg.mkPen('#cc4444', width=1.5, style=QtCore.Qt.DashLine))
+        plot.addItem(ref)
+
+    def _draw_optimality(self, plot):
         for i, run_id in enumerate(self.cached_runs):
-            color = pg.intColor(i)
-            all_ratios =[]
+            base_color = self.palettes[i % len(self.palettes)][0]
+            color = pg.mkColor(base_color)
+            color.setAlpha(100)
+            
+            scatter = pg.ScatterPlotItem(size=9, brush=color, pen=pg.mkPen(None), hoverable=True)
+            points = []
+            
             for ds in self.cached_datasets:
                 d = self.cached_results[(run_id, ds)]
                 if d['oracle_steps'] is not None:
                     mask = d['reached_mask']
-                    all_ratios.extend(d['steps'][mask] / d['oracle_steps'][mask])
-            if all_ratios:
-                y, x = np.histogram(all_ratios, bins=np.linspace(1, 4, 30))
-                plot.plot(x, y, stepMode="center", fillLevel=0, fillBrush=(*color.getRgb()[:3], 50), pen=color)
-        plot.setLabel('bottom', 'Efficiency Ratio (Steps / Oracle)')
-
-    def _draw_localization_lens(self, plot):
-        plot.addLegend(offset=(30, 30))
-        for i, run_id in enumerate(self.cached_runs):
-            agent_data = [self.cached_results[(run_id, ds)] for ds in self.cached_datasets] 
-            agent_data.sort(key=lambda x: x['density'])
-            
-            x = [d['density'] for d in agent_data]
-            y = [d['pr'] for d in agent_data] # The PR index
-            
-            color = pg.intColor(i)
-            plot.plot(x, y, pen=pg.mkPen(color, width=2), symbol='s', name=run_id)
-            
-        plot.setLabel('bottom', 'Obstacle Density (p)')
-        plot.setLabel('left', 'Localization Index (PR)')
-
-    def _draw_ipr_lens(self, plot):
-        """Draws the Anderson Localization transition."""
-        plot.addLegend(offset=(30, 30))
-        for i, run_id in enumerate(self.cached_runs):
-            # Get data for this specific agent across all datasets
-            agent_data = [self.cached_results[(run_id, ds)] for ds in self.cached_datasets]
-            agent_data.sort(key=lambda x: x['density']) # Sort by density for X-axis
-            
-            x = [d['density'] for d in agent_data]
-            
-            # --- THE FIX: Change d['pr'] to d['ipr'] ---
-            y = [d['ipr'] for d in agent_data] 
-            
-            color = pg.intColor(i)
-            plot.plot(x, y, pen=pg.mkPen(color, width=2), symbol='d', symbolBrush=color, name=run_id)
+                    for idx in np.where(mask)[0]:
+                        points.append({
+                            'pos': (d['oracle_steps'][idx], d['steps'][idx]),
+                            'data': (ds, int(idx))
+                        })
+            scatter.addPoints(points)
+            scatter.sigClicked.connect(self._on_scatter_clicked)
+            plot.addItem(scatter)
         
-        plot.setLabel('left', 'IPR (1.0 = Fully Localized)')
-        plot.setLabel('bottom', 'Obstacle Density (p)')
+        # Diagonal reference
+        plot.plot([0, 100], [0, 100], pen=pg.mkPen('#333', width=1, style=QtCore.Qt.DashLine))
 
-    def _draw_msd_lens(self, plot):
+    def _draw_ipr(self, plot):
         for i, run_id in enumerate(self.cached_runs):
-            agent_data = [self.cached_results[(run_id, ds)] for ds in self.cached_datasets]
-            agent_data.sort(key=lambda x: x['density'])
-            x = [d['density'] for d in agent_data]
-            y = [d['msd'] for d in agent_data] # Mean Squared Displacement
-            color = pg.intColor(i)
-            plot.plot(x, y, pen=pg.mkPen(color, width=2), symbol='o', name=run_id)
-        plot.setLabel('left', 'MSD <|r(t)-r(0)|^2>')
-        plot.setLabel('bottom', 'Obstacle Density (p)')
+            color = self.palettes[i % len(self.palettes)][0]
+            data = sorted([self.cached_results[(run_id, ds)] for ds in self.cached_datasets], key=lambda x: x['density'])
+            
+            unique_x = sorted(list(set([d['density'] for d in data])))
+            # Error-bar logic: plot the mean and the spread
+            means = [np.mean([d['ipr'] for d in data if d['density'] == ux]) for ux in unique_x]
+            
+            # Glow Line
+            p_glow = pg.mkColor(color)
+            p_glow.setAlpha(30)
+            plot.plot(unique_x, means, pen=pg.mkPen(p_glow, width=10))
+            
+            # Sharp Core Line
+            plot.plot(unique_x, means, pen=pg.mkPen(color, width=3, style=QtCore.Qt.DashLine), 
+                      symbol='s', symbolSize=10, symbolBrush=color, name=run_id)
+
+    def _draw_msd(self, plot):
+        for i, run_id in enumerate(self.cached_runs):
+            color = self.palettes[i % len(self.palettes)][0]
+            data = sorted([self.cached_results[(run_id, ds)] for ds in self.cached_datasets], key=lambda x: x['density'])
+            
+            unique_x = sorted(list(set([d['density'] for d in data])))
+            avg_y = [np.mean([d['msd'] for d in data if d['density'] == ux]) for ux in unique_x]
+            
+            # Fill under curve with a soft gradient look
+            fill_color = pg.mkColor(color)
+            fill_color.setAlpha(25)
+            plot.plot(unique_x, avg_y, pen=pg.mkPen(color, width=3), name=run_id, fillLevel=0, fillBrush=fill_color)
+
+    def _on_scatter_clicked(self, scatter, points):
+        if points:
+            ds, idx = points[0].data()
+            self.mazeSelected.emit(ds, idx)
