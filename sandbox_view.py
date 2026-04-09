@@ -177,14 +177,14 @@ class SandboxView(QtWidgets.QWidget):
 
     def set_dataset_name(self, name):
         self.ds_label.setText(f"DS: {name}")
-
-    def set_maze(self, maze_np, idx=None):
+    
+    def set_maze(self, maze_np, idx=None, connectivity=None):
         self.current_maze = maze_np
         self.current_maze_jax = jnp.array(maze_np)
+        self.current_connectivity = connectivity # <--- ADD THIS LINE
         if idx is not None:
             self.maze_slider.blockSignals(True)
-            self.maze_slider.setValue(idx)
-            self.maze_spin.setValue(idx)
+            self.maze_slider.setValue(idx); self.maze_spin.setValue(idx)
             self.maze_slider.blockSignals(False)
         self._trigger_update()
 
@@ -284,8 +284,21 @@ class SandboxView(QtWidgets.QWidget):
         self.view_right.set_maze(self.current_maze)
 
         if lens == "Probability Cloud":
-            self.view_left.set_heatmap(self.current_maze, np.log1p(np.array(l_occ)), cmap='viridis')
-            self.view_right.set_heatmap(self.current_maze, np.log1p(np.array(r_occ)), cmap='magma')
+            def prepare_data(occ_jax, conn_np):
+                # 1. Start with the swarm data (log smoothed)
+                data = np.log1p(np.array(occ_jax, dtype=float) * 20.0)
+                # 2. If oracle says a cell is unreachable, force it to -inf
+                if conn_np is not None:
+                    unreachable = (conn_np < -500) | (~np.isfinite(conn_np))
+                    data[unreachable] = -np.inf
+                return data
+
+            l_display = prepare_data(l_occ, self.current_connectivity)
+            r_display = prepare_data(r_occ, self.current_connectivity)
+
+            # 3. FIX: Ensure is_sparse=True is passed here!
+            self.view_left.set_heatmap(self.current_maze, l_display, cmap='viridis', is_sparse=True)
+            self.view_right.set_heatmap(self.current_maze, r_display, cmap='magma', is_sparse=True)
         elif lens == "Ghost Swarm":
             for i in range(min(15, ghosts)):
                 self._draw_path(self.view_left, l_paths[i], '#28A74544')

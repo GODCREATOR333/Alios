@@ -229,7 +229,9 @@ class AliosWindow(QtWidgets.QWidget):
     def sync_sandbox(self):
         if hasattr(self, 'sandbox_page') and self.mazes_np is not None:
             idx = self.get_real_maze_idx()
-            self.sandbox_page.set_maze(self.mazes_np[idx], idx=idx)
+            # Pass the maze AND the oracle value map (which marks unreachable as -inf)
+            conn_map = self.oracle_v[idx] if self.oracle_v is not None else None
+            self.sandbox_page.set_maze(self.mazes_np[idx], idx=idx, connectivity=conn_map)
 
     # =========================================================================
     # ZONE 3: BACKGROUND PHYSICS & CACHING

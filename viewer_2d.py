@@ -151,42 +151,66 @@ class MazeView(pg.PlotWidget):
                 else:
                     item.setColor(color)
 
-    def set_heatmap(self, maze_data, values, cmap='viridis'):
-        """Overlays heat colors on paths while keeping walls Black and empty space White."""
-        self.clear_visuals(keep_image=True)
+    def set_heatmap(self, maze_data, values, cmap='viridis', is_sparse=False):
+        """
+        is_sparse=True  -> Sandbox mode (Grey unvisited paths)
+        is_sparse=False -> Inspector mode (White base paths)
+        UNREACHABLE     -> Red in both modes
+        """
+        self.clear_probe()
         
-        # Mask valid path cells (ignore -inf and NaN)
-        valid = (maze_data == 0) & np.isfinite(values)
+        is_path = (maze_data == 0)
         
-        if not np.any(valid): 
-            self.set_maze(maze_data) 
-            return
+        # 1. Bulletproof Unreachable Check (-inf, NaN, or large negative penalties)
+        is_unreachable = is_path & ((values < -500) | ~np.isfinite(values))
+        
+        # Valid cells are paths that are NOT unreachable
+        is_valid = is_path & ~is_unreachable
+        
+        # 2. Base Canvas Initialization
+        h, w = maze_data.shape
+        bg_color = [120, 120, 120] if is_sparse else [255, 255, 255]
+        rgb = np.full((h, w, 3), bg_color, dtype=np.uint8)
 
-        # Normalize values
-        v_min, v_max = values[valid].min(), values[valid].max()
-        
-        # Prevent division by zero if all values are identical (like Oracle Entropy)
-        if v_max == v_min:
-            norm = np.zeros_like(values)
+        # 3. Paint Walls and Unreachable Zones
+        rgb[maze_data == 1] = [0, 0, 0]      # Walls = PURE BLACK
+        rgb[is_unreachable] = [150, 35, 35]  # Unreachable = BRIGHT RED
+
+        # 4. Determine which cells get the heatmap overlay
+        if is_sparse:
+            # SANDBOX: Only paint cells the fluid actually touched (value > 0)
+            # The rest will stay the Grey background color
+            active_mask = is_valid & (values > 1e-6)
         else:
-            norm = (values - v_min) / (v_max - v_min)
-            
-        v_indices = (np.clip(norm, 0, 1) * 255).astype(np.uint8)
-        
-        lut = pg.colormap.get(cmap).getLookupTable(0.0, 1.0, 256)
-        rgb = np.full((16, 16, 3), 255, dtype=np.uint8) # Base white
-        
-        rgb[maze_data == 0] = lut[v_indices[maze_data == 0]]
-        rgb[maze_data == 1] = [0, 0, 0] # Pure Black Walls
-        
-        # Unreachable cells (like -inf in pure geo) turn deep red
-        unreachable = (maze_data == 0) & ~np.isfinite(values)
-        rgb[unreachable] = [80, 0, 0]
+            # INSPECTOR: Paint all valid path cells (smooth full-maze gradient)
+            active_mask = is_valid
 
+        # 5. Apply the Heatmap
+        if np.any(active_mask):
+            v_active = values[active_mask]
+            v_min, v_max = v_active.min(), v_active.max()
+            
+            if v_max > v_min:
+                norm = (v_active - v_min) / (v_max - v_min)
+            else:
+                norm = np.zeros_like(v_active)
+            
+            lut = pg.colormap.get(cmap).getLookupTable(0.0, 1.0, 256)
+            v_indices = (np.clip(norm, 0, 1) * 255).astype(np.uint8)
+            
+            # Overlay the color map onto the active pixels
+            rgb[active_mask] = lut[v_indices]
+            
+            # Show the legend bar at the bottom
+            self._update_legend(v_min, v_max, lut)
+        else:
+            # Hide legend if no active data
+            self.legend_img.setVisible(False)
+            self.legend_min_txt.setVisible(False)
+            self.legend_max_txt.setVisible(False)
+
+        # 6. Render
         self.img.setImage(np.transpose(rgb, (1, 0, 2)))
-        
-        # --- FIX: ALWAYS CALL UPDATE LEGEND ---
-        self._update_legend(v_min, v_max, lut)
 
     def highlight_aliased_states(self, state_id, state_map, maze_data, color_rgba):
         """Paints specific states (Neuro-Probe)."""
