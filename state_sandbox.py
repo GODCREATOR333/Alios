@@ -71,3 +71,20 @@ def decode_ego_persistence(maze, r, c, last_action=-1):
     
     memory_id = jnp.int32(last_action + 1)
     return (win_id * 5 + memory_id).astype(jnp.int32)
+
+@register_state("meta_11k")
+def decode_meta_state(maze, r, c, last_action=4):
+    """
+    Learned Meta-State: 256 (window) * 9 (goal_dir) * 5 (last_action) = 11,520
+    Used by the Learned RL Meta-Agent.
+    """
+    padded = jnp.pad(maze, 1, constant_values=1)
+    window = jax.lax.dynamic_slice(padded, (r, c), (3, 3)).flatten()
+    neighbors = jnp.concatenate([window[:4], window[5:]])
+    window_id = jnp.sum(neighbors * jnp.array([128, 64, 32, 16, 8, 4, 2, 1]))
+    
+    # Goal Direction (9-way)
+    dr_sign, dc_sign = jnp.sign(15 - r) + 1, jnp.sign(15 - c) + 1
+    goal_id = dr_sign * 3 + dc_sign
+    
+    return (window_id * 45 + goal_id * 5 + last_action).astype(jnp.int32)

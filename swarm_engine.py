@@ -7,14 +7,16 @@ def simulate_swarm(rng_key, maze, policy, params, start_pos, num_ghosts=100, max
     keys = jax.random.split(rng_key, num_ghosts)
     
     def single_ghost_rollout(key, m, p, par, start):
+        # Ensure start is int32 for JAX indexing
+        start = start.astype(jnp.int32)
         init_mem = p.init_memory(1)[0]
         
         def step_fn(carry, step_idx):
             pos, mem, k = carry
-            k, subkey = jax.random.split(k)
+            k, sk1, sk2 = jax.random.split(k, 3)
             
-            # UNIFIED: Just pass maze and pos. The policy handles the rest!
-            action, probs, next_mem = p.step(subkey, m, pos, mem, par)
+            probs = p.get_action_probs(m, pos, mem, par)
+            action = jax.random.categorical(sk1, jnp.log(probs + 1e-9))
             
             dr = jnp.array([-1, 1, 0, 0])[action]
             dc = jnp.array([0, 0, -1, 1])[action]
@@ -23,12 +25,15 @@ def simulate_swarm(rng_key, maze, policy, params, start_pos, num_ghosts=100, max
             hit = (npos[0]<0)|(npos[0]>=16)|(npos[1]<0)|(npos[1]>=16) | (m[npos[0], npos[1]]==1)
             final_pos = jnp.where(hit, pos, npos)
             
-            return (final_pos, next_mem, k), final_pos
+            next_mem = p.update_memory(sk2, action, hit, m, pos, mem, par)
+            
+            # Record: pos, memory, action
+            return (final_pos, next_mem, k), (final_pos, mem, action)
 
-        _, path = jax.lax.scan(step_fn, (start, init_mem, key), jnp.arange(max_steps))
-        return path
+        _, (paths, mems, acts) = jax.lax.scan(step_fn, (start, init_mem, key), jnp.arange(max_steps))
+        return paths, mems, acts
 
-    all_paths = jax.vmap(single_ghost_rollout, in_axes=(0, None, None, None, None))(
+    all_paths, all_mems, all_acts = jax.vmap(single_ghost_rollout, in_axes=(0, None, None, None, None))(
         keys, maze, policy, params, start_pos
     )
     
@@ -37,7 +42,7 @@ def simulate_swarm(rng_key, maze, policy, params, start_pos, num_ghosts=100, max
     counts = jnp.bincount(flat_indices, length=256)
     occupancy = counts.reshape(16, 16)
     
-    return all_paths, occupancy
+    return all_paths, all_mems, all_acts, occupancy
 
 @partial(jax.jit, static_argnums=(1,)) 
 def compute_vector_field(maze, policy, params, memory_val=-1):
