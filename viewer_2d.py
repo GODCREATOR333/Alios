@@ -105,22 +105,27 @@ class MazeView(pg.PlotWidget):
     def _init_legend(self):
         """Helper for the bottom heatmap scale."""
         self.legend_img = pg.ImageItem()
+        self.legend_img.setZValue(20)
         self.legend_img.setVisible(False)
         self.addItem(self.legend_img)
         
         self.legend_min_txt = pg.TextItem("", color='#888', anchor=(0, 0))
+        self.legend_min_txt.setZValue(21)
         self.legend_max_txt = pg.TextItem("", color='#888', anchor=(1, 0))
+        self.legend_max_txt.setZValue(21)
         self.addItem(self.legend_min_txt)
         self.addItem(self.legend_max_txt)
 
     # --- API METHODS (Used by Engine) ---
 
     def set_maze(self, maze_data):
-        """Renders a standard black/white maze."""
-        self.clear_visuals()
-        rgb = np.full((16, 16, 3), 230, dtype=np.uint8) # Default white
-        rgb[maze_data == 1] = [30, 30, 30]             # Walls are dark
+        self.maze_data = maze_data
+        # Create pure white background
+        rgb = np.full((16, 16, 3), 255, dtype=np.uint8)
+        # Set walls to black
+        rgb[maze_data == 1] = [0, 0, 0]
         self.img.setImage(np.transpose(rgb, (1, 0, 2)))
+        self.clear_visuals(keep_image=True)
 
     def draw_policy(self, maze, action_grid, comparison_grid=None, color='#00BFFF'):
         """Updates the arrow pool based on policy."""
@@ -147,23 +152,40 @@ class MazeView(pg.PlotWidget):
                     item.setColor(color)
 
     def set_heatmap(self, maze_data, values, cmap='viridis'):
-        """Renders values (V or H) as a colorful heatmap."""
+        """Overlays heat colors on paths while keeping walls Black and empty space White."""
         self.clear_visuals(keep_image=True)
         
-        # Filter out infinities (common in RL)
+        # Mask valid path cells (ignore -inf and NaN)
         valid = (maze_data == 0) & np.isfinite(values)
-        if not np.any(valid): return
+        
+        if not np.any(valid): 
+            self.set_maze(maze_data) 
+            return
 
+        # Normalize values
         v_min, v_max = values[valid].min(), values[valid].max()
-        norm = (values - v_min) / (v_max - v_min + 1e-6)
+        
+        # Prevent division by zero if all values are identical (like Oracle Entropy)
+        if v_max == v_min:
+            norm = np.zeros_like(values)
+        else:
+            norm = (values - v_min) / (v_max - v_min)
+            
+        v_indices = (np.clip(norm, 0, 1) * 255).astype(np.uint8)
         
         lut = pg.colormap.get(cmap).getLookupTable(0.0, 1.0, 256)
-        rgb = lut[(np.clip(norm, 0, 1) * 255).astype(np.uint8)]
+        rgb = np.full((16, 16, 3), 255, dtype=np.uint8) # Base white
         
-        rgb[maze_data == 1] = [18, 18, 18]        # Paint walls dark
-        rgb[(maze_data == 0) & ~np.isfinite(values)] = [80, 0, 0] # Unreachable = Deep Red
+        rgb[maze_data == 0] = lut[v_indices[maze_data == 0]]
+        rgb[maze_data == 1] = [0, 0, 0] # Pure Black Walls
         
+        # Unreachable cells (like -inf in pure geo) turn deep red
+        unreachable = (maze_data == 0) & ~np.isfinite(values)
+        rgb[unreachable] = [80, 0, 0]
+
         self.img.setImage(np.transpose(rgb, (1, 0, 2)))
+        
+        # --- FIX: ALWAYS CALL UPDATE LEGEND ---
         self._update_legend(v_min, v_max, lut)
 
     def highlight_aliased_states(self, state_id, state_map, maze_data, color_rgba):
@@ -187,36 +209,49 @@ class MazeView(pg.PlotWidget):
         
         self.trajectory_line.setData(x_coords, y_coords)
 
+    def clear_probe(self):
+        """Only clears the interactive click-probe overlays."""
+        self.highlight_mask.clear()
+        self.trajectory_line.setData([], [])
+
     def clear_visuals(self, keep_image=False):
         """Resets the view layers."""
         if not keep_image: 
             self.img.clear()
-        self.highlight_mask.clear()
-        self.trajectory_line.setData([], [])
+        self.clear_probe() # Use the new helper here too
         self.legend_img.setVisible(False)
         self.legend_min_txt.setText("")
         self.legend_max_txt.setText("")
         for row in self.arrow_pool:
             for item in row: item.setText("")
 
-    def _update_legend(self, v_min, v_max, lut):
-        grad = np.tile(lut[:, np.newaxis, :], (1, 4, 1))
-        self.legend_img.setImage(grad)
-        self.legend_img.setRect(2, 16.2, 12, 0.4)
-        self.legend_img.setVisible(True)
-        self.legend_min_txt.setText(f"{v_min:.1f}")
-        self.legend_max_txt.setText(f"{v_max:.1f}")
-        self.legend_min_txt.setPos(2, 16.6)
-        self.legend_max_txt.setPos(14, 16.6)
-
+    # UPDATE your on_mouse_click method:
     def on_mouse_click(self, event):
         pos = self.getViewBox().mapSceneToView(event.scenePos())
         c, r = int(np.floor(pos.x() + 0.5)), int(np.floor(pos.y() + 0.5))
         if 0 <= r < 16 and 0 <= c < 16:
             if (r, c) == self.last_clicked_pos:
-                self.clear_visuals(keep_image=True)
+                self.clear_probe() # <--- THE FIX (Scalpel instead of Sledgehammer)
                 self.cellClicked.emit(-1, -1, -1, 0)
                 self.last_clicked_pos = None
             else:
                 self.last_clicked_pos = (r, c)
                 self.cellClicked.emit(r, c, 0, 0)
+
+    def _update_legend(self, v_min, v_max, lut):
+        grad = np.tile(lut[:, np.newaxis, :], (1, 4, 1))
+        self.legend_img.setImage(grad)
+        
+        # Draw below the maze (Y=16.2 to 16.6)
+        self.legend_img.setRect(2, 16.2, 12, 0.4)
+        self.legend_img.setVisible(True)
+        
+        self.legend_min_txt.setText(f"{v_min:.2f}")
+        self.legend_max_txt.setText(f"{v_max:.2f}")
+        
+        # Position text just below the color bar
+        self.legend_min_txt.setPos(2, 16.6)
+        self.legend_max_txt.setPos(14, 16.6)
+        
+        self.legend_min_txt.setVisible(True)
+        self.legend_max_txt.setVisible(True)
