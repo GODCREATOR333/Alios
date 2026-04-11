@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -45,7 +46,6 @@ class SandboxView(QtWidgets.QWidget):
         QScrollBar::handle:vertical { background:#555; border-radius:4px; }
         QScrollBar::handle:vertical:hover { background:#777; }
         """)
-        
         self.sidebar = QtWidgets.QWidget()
         self.sidebar_layout = QtWidgets.QVBoxLayout(self.sidebar)
         self.sidebar_layout.setContentsMargins(10, 10, 15, 10)
@@ -124,7 +124,34 @@ class SandboxView(QtWidgets.QWidget):
         self.sidebar_layout.addWidget(self.r_card)
 
         self.sidebar_layout.addStretch()      
-        self.sidebar_scroll.setWidget(self.sidebar)
+        self.sidebar_scroll.setWidget(self.sidebar)     
+
+        # ZONE E: THE INTERPRETATION LAB GUIDE (LEGEND)
+        self.guide_group = QtWidgets.QGroupBox("Lab Interpretation Guide")
+        self.guide_group.setStyleSheet(self.group_style.replace("#DDD", "#FFD700"))
+        guide_lay = QtWidgets.QVBoxLayout(self.guide_group)
+        
+        guide_text = QtWidgets.QLabel(
+            "<b style='color:#00BFFF;'>■ MODE COLORS (Trajectories):</b><br>"
+            "&nbsp;&nbsp;<span style='color:#00BFFF;'>• BLUE:</span> GEO (Goal-Drift Mode)<br>"
+            "&nbsp;&nbsp;<span style='color:#FF4500;'>• RED :</span> EGO (Wall-Escape Mode)<br>"
+            "&nbsp;&nbsp;<span style='color:#FFD700;'>• DIAMOND:</span> Phase Transition (Switch)<br><br>"
+            
+            "<b style='color:#DDD;'>■ MAZE PHYSICS:</b><br>"
+            "&nbsp;&nbsp;• BLACK: Rigid Obstacle Matrix<br>"
+            "&nbsp;&nbsp;• GREY : Reachable Pore Space<br>"
+            "&nbsp;&nbsp;<span style='color:#B41E1E;'>• RED&nbsp; :</span> Physically Unreachable<br><br>"
+            
+            "<b style='color:#6FCF97;'>■ LENS INTERPRETATION:</b><br>"
+            "&nbsp;&nbsp;• <b>Cloud:</b> Steady-state density flux.<br>"
+            "&nbsp;&nbsp;• <b>Swarm:</b> Real-time stochastic ghosts.<br>"
+            "&nbsp;&nbsp;• <b>Field:</b> Mean pressure/intent vector.<br>"
+            "&nbsp;&nbsp;• <b>Modes:</b> Internal brain state logic."
+        )
+        guide_text.setStyleSheet("color: #BBB; font-size: 9pt; line-height: 150%;")
+        guide_text.setWordWrap(True)
+        guide_lay.addWidget(guide_text)
+        self.sidebar_layout.addWidget(self.guide_group)
 
         # --- VIEWERS ---
         self.viewer_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -155,6 +182,28 @@ class SandboxView(QtWidgets.QWidget):
         self.current_maze_jax = None
         self.rng_key = jax.random.PRNGKey(np.random.randint(1000))
         self.path_items = []
+
+    def _add_param_control(self, layout, label, min_v, max_v, start_v, color="#00BFFF"):
+        """Adds a Slider + SpinBox pair for a parameter."""
+        row = QtWidgets.QHBoxLayout()
+        lbl = QtWidgets.QLabel(label)
+        spin = QtWidgets.QSpinBox()
+        spin.setRange(min_v, max_v); spin.setValue(start_v)
+        spin.setFixedWidth(50); spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        spin.setStyleSheet("background:#1e1e1e; color:#ddd; border:1px solid #444; padding:2px;")
+        
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setRange(min_v, max_v); slider.setValue(start_v)
+        slider.setStyleSheet(f"QSlider::handle:horizontal {{ background: {color}; }}")
+        
+        slider.valueChanged.connect(spin.setValue)
+        spin.valueChanged.connect(slider.setValue)
+        slider.valueChanged.connect(self._trigger_update)
+        
+        layout.addWidget(lbl)
+        row.addWidget(slider); row.addWidget(spin)
+        layout.addLayout(row)
+        return slider, spin
 
     def _add_param_slider(self, layout, label, min_v, max_v, start_v, color="#00BFFF"):
         lbl = QtWidgets.QLabel(label)
@@ -205,19 +254,20 @@ class SandboxView(QtWidgets.QWidget):
         # 2. Physics Configuration
         m_txt = self.model_selector.currentText()
         if "RL Meta-Agent" in m_txt:
-            # Look up our registered agent
+            # Make sure you ran the script to save "META_RL_V1" to your DB!
             details = db_manager.get_run_details("META_RL_V1_p10")
-            if details:
-                # Load the brain from the path in the DB
-                q_data = jnp.array(np.load(details['path']))
-                policy = models.LearnedMetaPolicy(q_data)
+            if details and os.path.exists(details['path']):
+                q_table = jnp.array(np.load(details['path']))
+                policy = models.LearnedMetaPolicy(q_table)
             else:
-                # Fallback if you haven't run the registration script yet
-                self.stats_label.setText("<b style='color:red;'>ERROR:</b> META_RL_V1_p10 not found in DB.")
+                self.stats_label.setText("<b style='color:red;'>ERROR:</b> META_RL_V1_p10 not found. Run training script.")
                 return
-        elif "Hybrid" in m_txt: policy = models.HybridPolicy()
-        elif "Geocentric" in m_txt: policy = models.GeoPolicy()
-        else: policy = models.EgoPolicy()
+        elif "Hybrid" in m_txt: 
+            policy = models.HybridPolicy()
+        elif "Geocentric" in m_txt: 
+            policy = models.GeoPolicy()
+        else: 
+            policy = models.EgoPolicy()
         
         l_params = {'kappa': self.l_kappa.value()/10.0, 'D_R': self.l_dr.value()/100.0, 'gamma': self.l_gamma.value()/100.0, 'goal_pos': jnp.array([15.0, 15.0])}
         r_params = {'kappa': self.r_kappa.value()/10.0, 'D_R': self.r_dr.value()/100.0, 'gamma': self.r_gamma.value()/100.0, 'goal_pos': jnp.array([15.0, 15.0])}
@@ -236,6 +286,30 @@ class SandboxView(QtWidgets.QWidget):
         l_paths, l_mems, l_acts, l_occ = l_res
         r_paths, r_mems, r_acts, r_occ = r_res
 
+        def calc_metrics(res):
+            paths = np.array(res[0])
+            colls = np.array(res[2]) # Now contains cumulative collisions
+            
+            # Exact training script logic: reached = at_goal
+            at_goal = (paths[:, :, 0] == 15) & (paths[:, :, 1] == 15)
+            reached = np.any(at_goal, axis=1)
+            sr = np.mean(reached) * 100
+            
+            # MFPT: First index where at_goal is True
+            fpt = np.array([np.where(row)[0][0] for row in at_goal[reached]]) if np.any(reached) else [0]
+            
+            # Collisions: Total collisions averaged across trials
+            avg_colls = np.mean(colls[:, -1])
+            return sr, np.mean(fpt), np.var(fpt), avg_colls
+
+        l_m = calc_metrics(l_res); r_m = calc_metrics(r_res)
+
+        self.stats_label.setText(
+            f"<b style='color:#FFD700'>TRANSIT ANALYTICS</b><br>Ghosts: {ghosts} | T_max: {steps}<br><hr style='border:1px solid #444'>"
+            f"<b style='color:#28A745'>LEFT PANEL</b><br>SR: {l_m[0]:.1f}% | Colls: {l_m[3]:.1f}<br>MFPT: {l_m[1]:.1f} (σ²:{l_m[2]:.1f})<br><br>"
+            f"<b style='color:#00BFFF'>RIGHT PANEL</b><br>SR: {r_m[0]:.1f}% | Colls: {r_m[3]:.1f}<br>MFPT: {r_m[1]:.1f} (σ²:{r_m[2]:.1f})"
+        )
+        
         def analyze_meta_behavior(mems_jax):
             mems = np.array(mems_jax)
             
@@ -285,9 +359,7 @@ class SandboxView(QtWidgets.QWidget):
 
         if lens == "Probability Cloud":
             def prepare_data(occ_jax, conn_np):
-                # 1. Start with the swarm data (log smoothed)
                 data = np.log1p(np.array(occ_jax, dtype=float) * 20.0)
-                # 2. If oracle says a cell is unreachable, force it to -inf
                 if conn_np is not None:
                     unreachable = (conn_np < -500) | (~np.isfinite(conn_np))
                     data[unreachable] = -np.inf
@@ -296,25 +368,35 @@ class SandboxView(QtWidgets.QWidget):
             l_display = prepare_data(l_occ, self.current_connectivity)
             r_display = prepare_data(r_occ, self.current_connectivity)
 
-            # 3. FIX: Ensure is_sparse=True is passed here!
             self.view_left.set_heatmap(self.current_maze, l_display, cmap='viridis', is_sparse=True)
             self.view_right.set_heatmap(self.current_maze, r_display, cmap='magma', is_sparse=True)
+            
         elif lens == "Ghost Swarm":
             for i in range(min(15, ghosts)):
                 self._draw_path(self.view_left, l_paths[i], '#28A74544')
                 self._draw_path(self.view_right, r_paths[i], '#00BFFF44')
-        elif lens == "Representative Trajectory (Modes)":
-            if "Hybrid" in m_txt:
-                self._draw_hybrid_path(self.view_left, l_paths[0], l_mems[0, :, 0])
-                self._draw_hybrid_path(self.view_right, r_paths[0], r_mems[0, :, 0])
-            else:
-                self._draw_path(self.view_left, l_paths[0], '#28A745')
-                self._draw_path(self.view_right, r_paths[0], '#00BFFF')
+                
         elif lens == "Fluid Vector Field":
+            self.view_left.set_maze(self.current_maze)
+            self.view_right.set_maze(self.current_maze)
             field_l, _ = engine.compute_vector_field(self.current_maze_jax, policy, l_params)
             field_r, _ = engine.compute_vector_field(self.current_maze_jax, policy, r_params)
             self.view_left.draw_policy(self.current_maze, jnp.argmax(field_l, axis=-1), color='#28A745')
             self.view_right.draw_policy(self.current_maze, jnp.argmax(field_r, axis=-1), color='#00BFFF')
+            
+        elif lens == "Representative Trajectory (Modes)":
+            if l_paths.shape[0] > 0:
+                # FIX: Check for BOTH Hybrid and RL Meta-Agent
+                if "Hybrid" in m_txt or "RL Meta-Agent" in m_txt:
+                    # Extract mode (index 0 of the memory array)
+                    l_modes = l_mems[0, :, 0] if l_mems.ndim == 3 else np.zeros(steps)
+                    r_modes = r_mems[0, :, 0] if r_mems.ndim == 3 else np.zeros(steps)
+                    
+                    self._draw_hybrid_path(self.view_left, l_paths[0], l_modes)
+                    self._draw_hybrid_path(self.view_right, r_paths[0], r_modes)
+                else:
+                    self._draw_path(self.view_left, l_paths[0], '#28A745')
+                    self._draw_path(self.view_right, r_paths[0], '#00BFFF')
 
         self.view_left.setTitle(f"Mode A │ κ={l_params['kappa']:.1f}", color='#28A745')
         self.view_right.setTitle(f"Mode B │ κ={r_params['kappa']:.1f}", color='#00BFFF')
