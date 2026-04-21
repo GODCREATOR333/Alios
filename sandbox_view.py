@@ -282,9 +282,9 @@ class SandboxView(QtWidgets.QWidget):
         
         r_res = engine.simulate_swarm(k2, self.current_maze_jax, policy, r_params, jnp.array([0, 0]), ghosts, steps)
 
-        # Unpack: (paths, mems, acts, occupancy)
-        l_paths, l_mems, l_acts, l_occ = l_res
-        r_paths, r_mems, r_acts, r_occ = r_res
+        # Unpack: (paths, mems, acts, occupancy, done, hits)
+        l_paths, l_mems, l_acts, l_dones, l_hits, l_occ = engine.simulate_swarm(k1, self.current_maze_jax, policy, l_params, jnp.array([0, 0]), ghosts, steps)
+        r_paths, r_mems, r_acts, r_dones, r_hits, r_occ = engine.simulate_swarm(k2, self.current_maze_jax, policy, r_params, jnp.array([0, 0]), ghosts, steps)
 
         def calc_metrics(res):
             paths = np.array(res[0])
@@ -325,31 +325,38 @@ class SandboxView(QtWidgets.QWidget):
         r_ego_pct = analyze_meta_behavior(r_mems)
 
         # 4. Statistical Calculations
-        def get_stats(paths_jax):
-            paths = np.array(paths_jax)
-            reached = np.all(paths[:, -1] == [15, 15], axis=-1)
-            sr = np.mean(reached) * 100
-            dist_to_goal = np.linalg.norm(paths[:, -1] - [15, 15], axis=-1)
-            return sr, np.mean(dist_to_goal), np.var(dist_to_goal)
+        def get_scientific_stats(dones_jax, hits_jax):
+            dones = np.array(dones_jax)
+            hits = np.array(hits_jax)
+            
+            # 1. Success Rate: Is the 'done' flag True at the very last time step?
+            reached = dones[:, -1]
+            sr = np.mean(reached) * 100.0
+            
+            # 2. Mean First Passage Time (MFPT)
+            if np.any(reached):
+                # argmax finds the exact step number the ghost hit the goal
+                fpt = np.argmax(dones[reached], axis=1) + 1.0
+                mfpt_mean = np.mean(fpt)
+                mfpt_var = np.var(fpt)
+            else:
+                mfpt_mean, mfpt_var = 0.0, 0.0
+                
+            # 3. Collisions
+            # Because the physics engine stops counting hits after 'done' is True,
+            # we can safely sum the entire row to get total transport collisions.
+            avg_colls = np.mean(np.sum(hits, axis=1))
 
+            return sr, mfpt_mean, mfpt_var, avg_colls
 
-        lsr, l_m, l_v = get_stats(l_paths)
-        rsr, r_m, r_v = get_stats(r_paths)
+        # Call the new function
+        lsr, l_m, l_v, l_c = get_scientific_stats(l_dones, l_hits)
+        rsr, r_m, r_v, r_c = get_scientific_stats(r_dones, r_hits)
 
         self.stats_label.setText(
-            f"<b style='color:#FFD700'>DYNAMICS ANALYTICS</b><br>"
-            f"Ghosts: {ghosts} | Horizon: {steps}<br>"
-            f"<hr style='border:1px solid #444'>"
-            f"<b style='color:#28A745'>MODE A (LEFT)</b><br>"
-            f"Success Rate : {lsr:.1f}%<br>"
-            f"EGO Usage    : {l_ego_pct:.1f}%<br>"
-            f"Mean Final G : {l_m:.2f}<br>"
-            f"Variance     : {l_v:.2f}<br><br>"
-            f"<b style='color:#00BFFF'>MODE B (RIGHT)</b><br>"
-            f"Success Rate : {rsr:.1f}%<br>"
-            f"EGO Usage    : {r_ego_pct:.1f}%<br>"
-            f"Mean Final G : {r_m:.2f}<br>"
-            f"Variance     : {r_v:.2f}"
+            f"<b style='color:#FFD700'>LAB ANALYSIS</b><br>Ghosts: {ghosts} | T: {steps}<br><hr style='border:1px solid #444'>"
+            f"<b style='color:#28A745'>MODE A (LEFT)</b><br>Success: {lsr:.1f}%<br>Collisions: {l_c:.1f}<br>MFPT Mean: {l_m:.1f}<br>MFPT Var: {l_v:.1f}<br><br>"
+            f"<b style='color:#00BFFF'>MODE B (RIGHT)</b><br>Success: {rsr:.1f}%<br>Collisions: {r_c:.1f}<br>MFPT Mean: {r_m:.1f}<br>MFPT Var: {r_v:.1f}"
         )
 
         # 5. Rendering

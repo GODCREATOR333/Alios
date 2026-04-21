@@ -33,12 +33,16 @@ class EgoPolicy(StatefulPolicy):
             base = base.at[la].set(p_straight)
             base = base.at[opp_idx].set(0.0)
             return base
+        
+        # Start of the maze with no momentum
+        is_init = (memory == -1) | (memory == 4)
+        safe_memory = jnp.clip(memory, 0, 3) # Protects against out-of-bounds
 
-        probs = jnp.where(memory == -1, jnp.full(4, 0.25), calc_probs(memory))
+        probs = jnp.where(is_init, jnp.full(4, 0.25), calc_probs(safe_memory))
         probs = jnp.where(is_wall, 0.0, probs)
         s = jnp.sum(probs)
         
-        rev_idx = jnp.take(jnp.array([1, 0, 3, 2]), jnp.maximum(0, memory))
+        rev_idx = jnp.take(jnp.array([1, 0, 3, 2]), safe_memory)
         fallback = jnp.zeros(4).at[rev_idx].set(1.0)
         return jnp.where(s > 0, probs / s, fallback)
 
@@ -62,8 +66,9 @@ class HybridPolicy(StatefulPolicy):
         return jnp.tile(jnp.array([0, -1], dtype=jnp.int32), (batch_size, 1))
 
     def get_action_probs(self, maze, pos, memory, params):
-        mode = memory[0]
-        last_a = memory[1]
+        mem = jnp.atleast_1d(memory)
+        mode = mem[0]
+        last_a = jnp.where(mem.shape[0] > 1, mem[-1], mem[0])
         
         # Calculate both
         geo_probs = GeoPolicy().get_action_probs(maze, pos, memory, params)
@@ -104,8 +109,9 @@ class LearnedMetaPolicy(StatefulPolicy):
         return jnp.tile(jnp.array([0, 4], dtype=jnp.int32), (batch_size, 1))
 
     def get_action_probs(self, maze, pos, memory, params):
+        mem = jnp.atleast_1d(memory)
+        last_a = jnp.where(mem.shape[0] > 1, mem[-1], mem[0])
         r, c = pos[0], pos[1]
-        last_a = memory[1]
         
         # 1. Look up the Meta-Choice (GEO vs EGO) from the Q-Table
         state_id = decode_meta_state(maze, r, c, last_a)
@@ -123,12 +129,14 @@ class LearnedMetaPolicy(StatefulPolicy):
     def update_memory(self, rng_key, action, hit, maze, pos, memory, params):
         # We need to recalculate the state to find WHICH mode the Q-table chose
         # so we can store it in the memory for the next step/visualization
+        mem = jnp.atleast_1d(memory)
+        last_a = jnp.where(mem.shape[0] > 1, mem[-1], mem[0])
         r, c = pos[0], pos[1]
-        last_a = memory[1]
         state_id = decode_meta_state(maze, r, c, last_a)
         
         # Determine which mode the Q-table preferred at THIS step
-        mode = jnp.argmax(self.q_table[state_id]) 
+        mode = jnp.argmax(self.q_table[state_id])
+        next_last_a = jnp.where(hit, action, action) 
         
         # Store [Mode, Physical_Action]
-        return jnp.array([mode, action], dtype=jnp.int32)
+        return jnp.array([mode, next_last_a], dtype=jnp.int32)
