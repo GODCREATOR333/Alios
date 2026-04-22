@@ -24,8 +24,8 @@ class SandboxView(QtWidgets.QWidget):
             QSlider::sub-page:horizontal { background: #00BFFF; border-radius: 3px; }
         """
         self.group_style = """
-        QGroupBox { font-weight:bold; border:1px solid #333; border-radius:8px; margin-top:10px; padding:8px; }
-        QGroupBox::title { left:10px; padding:0 3px; }
+            QGroupBox { font-weight: bold; border: 1px solid #333; border-radius: 8px; margin-top: 10px; padding: 8px; }
+            QGroupBox::title { left: 10px; padding: 0 3px; }
         """
 
         self.calc_timer = QtCore.QTimer()
@@ -42,9 +42,10 @@ class SandboxView(QtWidgets.QWidget):
         self.sidebar_scroll.setFixedWidth(400)
         self.sidebar_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.sidebar_scroll.setStyleSheet("""
-        QScrollBar:vertical { border:none; background:#121212; width:8px; }
-        QScrollBar::handle:vertical { background:#555; border-radius:4px; }
-        QScrollBar::handle:vertical:hover { background:#777; }
+            QScrollBar:vertical { border: none; background: #121212; width: 8px; margin: 0px 0px 0px 0px; }
+            QScrollBar::handle:vertical { background: #555; min-height: 30px; border-radius: 4px; }
+            QScrollBar::handle:vertical:hover { background: #777; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { border: none; background: none; height: 0px; }
         """)
         self.sidebar = QtWidgets.QWidget()
         self.sidebar_layout = QtWidgets.QVBoxLayout(self.sidebar)
@@ -55,15 +56,7 @@ class SandboxView(QtWidgets.QWidget):
         self.stats_group = QtWidgets.QGroupBox("Statistical Analytics")
         stats_lay = QtWidgets.QVBoxLayout(self.stats_group)
         self.stats_label = QtWidgets.QLabel("Initializing Lab...")
-        self.stats_label.setStyleSheet("""
-            color: #CCCCCC;
-            font-family: 'Courier New';
-            font-size: 11pt;
-            background: #0d0d0d;
-            padding: 10px;
-            border-radius: 6px;
-            line-height: 140%;
-            """)
+        self.stats_label.setStyleSheet("font-family: 'Courier New'; font-size: 10pt; color: #00FF00; background-color: #000; padding: 8px; border-radius: 4px;")
         stats_lay.addWidget(self.stats_label)
         self.sidebar_layout.addWidget(self.stats_group)
 
@@ -72,7 +65,7 @@ class SandboxView(QtWidgets.QWidget):
         self.nav_group.setStyleSheet(self.group_style)
         nav_lay = QtWidgets.QVBoxLayout(self.nav_group)
         self.ds_label = QtWidgets.QLabel("DS: None")
-        self.ds_label.setStyleSheet("color: #777; font-size: 9pt; font-weight: bold;")
+        self.ds_label.setStyleSheet("color: #888; font-size: 9pt; font-weight: bold;")
         nav_lay.addWidget(self.ds_label)
 
         spin_row = QtWidgets.QHBoxLayout()
@@ -81,7 +74,7 @@ class SandboxView(QtWidgets.QWidget):
         self.maze_spin.setFixedWidth(60)
         self.maze_spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
         self.maze_spin.setAlignment(QtCore.Qt.AlignCenter)
-        self.maze_spin.setStyleSheet("QSpinBox { padding:4px; border-radius:6px; border:1px solid #444; background:#1e1e1e; color:#ddd; }")
+        self.maze_spin.setStyleSheet("QSpinBox { padding: 4px; border-radius: 6px; border: 1px solid #444; background-color: #1e1e1e; color: #ddd; }")
         self.maze_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.maze_slider.setRange(0, 999)
         self.maze_slider.setStyleSheet(self.slider_style)
@@ -101,7 +94,7 @@ class SandboxView(QtWidgets.QWidget):
         self.lens_selector = QtWidgets.QComboBox()
         self.lens_selector.addItems(["Probability Cloud", "Ghost Swarm", "Representative Trajectory (Modes)", "Fluid Vector Field"])
         
-        self.sim_ghosts = self._add_param_slider(set_lay, "Ghosts:", 10, 500, 100)
+        self.sim_Runs = self._add_param_slider(set_lay, "Runs:", 10, 500, 100)
         self.sim_steps = self._add_param_slider(set_lay, "Max Steps:", 10, 500, 150)
         
         set_lay.addRow("Architecture:", self.model_selector)
@@ -128,7 +121,7 @@ class SandboxView(QtWidgets.QWidget):
 
         # ZONE E: THE INTERPRETATION LAB GUIDE (LEGEND)
         self.guide_group = QtWidgets.QGroupBox("Lab Interpretation Guide")
-        self.guide_group.setStyleSheet(self.group_style.replace("#DDD", "#FFD700"))
+        self.guide_group.setStyleSheet("QGroupBox { color: #FFD700; }")
         guide_lay = QtWidgets.QVBoxLayout(self.guide_group)
         
         guide_text = QtWidgets.QLabel(
@@ -144,7 +137,7 @@ class SandboxView(QtWidgets.QWidget):
             
             "<b style='color:#6FCF97;'>■ LENS INTERPRETATION:</b><br>"
             "&nbsp;&nbsp;• <b>Cloud:</b> Steady-state density flux.<br>"
-            "&nbsp;&nbsp;• <b>Swarm:</b> Real-time stochastic ghosts.<br>"
+            "&nbsp;&nbsp;• <b>Swarm:</b> Real-time stochastic Runs.<br>"
             "&nbsp;&nbsp;• <b>Field:</b> Mean pressure/intent vector.<br>"
             "&nbsp;&nbsp;• <b>Modes:</b> Internal brain state logic."
         )
@@ -171,9 +164,11 @@ class SandboxView(QtWidgets.QWidget):
         self.maze_slider.valueChanged.connect(self.maze_spin.setValue)
         self.maze_spin.valueChanged.connect(self.maze_slider.setValue)
         self.maze_slider.valueChanged.connect(lambda v: self.mazeChanged.emit(v))
+        self.model_selector.currentIndexChanged.connect(self.update_param_states)
+        self.update_param_states()  # Sets correct initial state on launch
         
         widgets = [self.l_kappa, self.l_dr, self.l_gamma, self.r_kappa, self.r_dr, self.r_gamma, 
-                   self.model_selector, self.lens_selector, self.sim_ghosts, self.sim_steps, self.maze_slider]
+                   self.model_selector, self.lens_selector, self.sim_Runs, self.sim_steps, self.maze_slider]
         for w in widgets:
             if hasattr(w, 'valueChanged'): w.valueChanged.connect(self._trigger_update)
             else: w.currentIndexChanged.connect(self._trigger_update)
@@ -190,11 +185,15 @@ class SandboxView(QtWidgets.QWidget):
         spin = QtWidgets.QSpinBox()
         spin.setRange(min_v, max_v); spin.setValue(start_v)
         spin.setFixedWidth(50); spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-        spin.setStyleSheet("background:#1e1e1e; color:#ddd; border:1px solid #444; padding:2px;")
+        spin.setStyleSheet("QSpinBox { padding: 4px; border-radius: 6px; border: 1px solid #444; background-color: #1e1e1e; color: #ddd; }")
         
         slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         slider.setRange(min_v, max_v); slider.setValue(start_v)
-        slider.setStyleSheet(f"QSlider::handle:horizontal {{ background: {color}; }}")
+        slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{ height: 6px; background: #2a2a2a; border-radius: 3px; }}
+            QSlider::handle:horizontal {{ background: {color}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
+            QSlider::sub-page:horizontal {{ background: {color}; border-radius: 3px; }}
+        """)
         
         slider.valueChanged.connect(spin.setValue)
         spin.valueChanged.connect(slider.setValue)
@@ -207,25 +206,122 @@ class SandboxView(QtWidgets.QWidget):
 
     def _add_param_slider(self, layout, label, min_v, max_v, start_v, color="#00BFFF"):
         lbl = QtWidgets.QLabel(label)
+        
         slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         slider.setRange(min_v, max_v)
         slider.setValue(start_v)
-        
-        css = f"""
+        slider.setStyleSheet(f"""
             QSlider::groove:horizontal {{ height: 6px; background: #2a2a2a; border-radius: 3px; }}
             QSlider::handle:horizontal {{ background: {color}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
             QSlider::sub-page:horizontal {{ background: {color}; border-radius: 3px; }}
-        """
-        slider.setStyleSheet(css)
+        """)
+
+        # Use QDoubleSpinBox for 0.0-10.0 precision on physics params
+        if max_v <= 100:
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setRange(min_v / 10.0, max_v / 10.0)
+            spin.setDecimals(1)
+            spin.setSingleStep(0.1)
+            spin.setValue(start_v / 10.0)
+        else:
+            spin = QtWidgets.QSpinBox()
+            spin.setRange(min_v, max_v)
+            spin.setSingleStep(1)
+            spin.setValue(start_v)
+
+        spin.setFixedWidth(60)
+        spin.setAlignment(QtCore.Qt.AlignCenter)
+        spin.setStyleSheet("QDoubleSpinBox, QSpinBox { padding: 4px; border-radius: 6px; border: 1px solid #444; background-color: #1e1e1e; color: #ddd; }")
+        spin.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+
+        def on_slider(val):
+            spin.blockSignals(True)
+            spin.setValue(val / 10.0 if max_v <= 100 else val)
+            spin.blockSignals(False)
+
+        def on_spin(val):
+            slider.blockSignals(True)
+            slider.setValue(int(round(val * 10)) if max_v <= 100 else int(val))
+            slider.blockSignals(False)
+
+        slider.valueChanged.connect(on_slider)
+        spin.valueChanged.connect(on_spin)
+
+        # Attach spin to slider so we can disable/enable both together later
+        slider._spin = spin
+
+        row = QtWidgets.QWidget()
+        rlay = QtWidgets.QHBoxLayout(row)
+        rlay.setContentsMargins(0, 0, 0, 0)
+        rlay.setSpacing(10)
+        rlay.addWidget(slider)
+        rlay.addWidget(spin)
+
         if isinstance(layout, QtWidgets.QFormLayout):
-            layout.addRow(lbl, slider)
+            layout.addRow(lbl, row)
         else:
             layout.addWidget(lbl)
-            layout.addWidget(slider)
+            layout.addWidget(row)
+
         return slider
+    
+    def update_param_states(self):
+        policy = self.model_selector.currentText()
+        params = [self.l_kappa, self.l_dr, self.l_gamma, 
+                  self.r_kappa, self.r_dr, self.r_gamma]
+        
+        # (kappa_enabled, dr_enabled, gamma_enabled)
+        if "Geocentric" in policy:
+            states = [True, False, False]
+        elif "Egocentric" in policy:
+            states = [False, True, False]
+        elif "Hybrid" in policy:
+            states = [True, True, True]
+        elif "RL Meta-Agent" in policy:
+            states = [True, True, False]
+        else:
+            states = [True, True, True]
+
+        # Apply to both Left & Right panels
+        for side in range(2):
+            for j, enable in enumerate(states):
+                w = params[side * 3 + j]
+                spin = getattr(w, '_spin', None)
+
+                w.setEnabled(enable)
+                if spin: spin.setEnabled(enable)
+
+                # --- ADD THIS ---
+                grey = "#555"
+                orig = "#6FCF97" if side == 0 else "#56CCF2"
+
+                color = orig if enable else grey
+
+                w.setStyleSheet(f"""
+                    QSlider::groove:horizontal {{ height: 6px; background: #2a2a2a; border-radius: 3px; }}
+                    QSlider::handle:horizontal {{ background: {color}; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px; }}
+                    QSlider::sub-page:horizontal {{ background: {color}; border-radius: 3px; }}
+                """)
+
+                if spin:
+                    spin.setStyleSheet(
+                        "QDoubleSpinBox, QSpinBox { padding: 4px; border-radius: 6px; border: 1px solid #444; background-color: #1e1e1e; color: #888; }"
+                        if not enable else
+                        "QDoubleSpinBox, QSpinBox { padding: 4px; border-radius: 6px; border: 1px solid #444; background-color: #1e1e1e; color: #ddd; }"
+                    )
 
     def set_dataset_name(self, name):
         self.ds_label.setText(f"DS: {name}")
+        
+        # UI/UX: Lock navigation for single-maze datasets
+        if "N16_P0000_empty_test.npy" in name:
+            self.maze_slider.setEnabled(False)
+            self.maze_spin.setEnabled(False)
+            self.maze_slider.setValue(0)
+            self.maze_spin.setValue(0)
+        else:
+            self.maze_slider.setEnabled(True)
+            self.maze_spin.setEnabled(True)
     
     def set_maze(self, maze_np, idx=None, connectivity=None):
         self.current_maze = maze_np
@@ -272,19 +368,23 @@ class SandboxView(QtWidgets.QWidget):
         l_params = {'kappa': self.l_kappa.value()/10.0, 'D_R': self.l_dr.value()/100.0, 'gamma': self.l_gamma.value()/100.0, 'goal_pos': jnp.array([15.0, 15.0])}
         r_params = {'kappa': self.r_kappa.value()/10.0, 'D_R': self.r_dr.value()/100.0, 'gamma': self.r_gamma.value()/100.0, 'goal_pos': jnp.array([15.0, 15.0])}
 
-        ghosts = self.sim_ghosts.value()
+        Runs = self.sim_Runs.value()
         steps = self.sim_steps.value()
 
         # 3. Execution
-        self.rng_key, k1, k2 = jax.random.split(self.rng_key, 3)
+        # New fixed random key for each maze.
+        maze_seed = self.maze_slider.value() + 42
+        k1, k2 = jax.random.split(jax.random.PRNGKey(maze_seed), 2)
+        # Old random key generator for each run
+        # self.rng_key, k1, k2 = jax.random.split(self.rng_key, 3)
         
-        l_res = engine.simulate_swarm(k1, self.current_maze_jax, policy, l_params, jnp.array([0, 0]), ghosts, steps)
+        l_res = engine.simulate_swarm(k1, self.current_maze_jax, policy, l_params, jnp.array([0, 0]), Runs, steps)
         
-        r_res = engine.simulate_swarm(k2, self.current_maze_jax, policy, r_params, jnp.array([0, 0]), ghosts, steps)
+        r_res = engine.simulate_swarm(k2, self.current_maze_jax, policy, r_params, jnp.array([0, 0]), Runs, steps)
 
         # Unpack: (paths, mems, acts, occupancy, done, hits)
-        l_paths, l_mems, l_acts, l_dones, l_hits, l_occ = engine.simulate_swarm(k1, self.current_maze_jax, policy, l_params, jnp.array([0, 0]), ghosts, steps)
-        r_paths, r_mems, r_acts, r_dones, r_hits, r_occ = engine.simulate_swarm(k2, self.current_maze_jax, policy, r_params, jnp.array([0, 0]), ghosts, steps)
+        l_paths, l_mems, l_acts, l_dones, l_hits, l_occ = engine.simulate_swarm(k1, self.current_maze_jax, policy, l_params, jnp.array([0, 0]), Runs, steps)
+        r_paths, r_mems, r_acts, r_dones, r_hits, r_occ = engine.simulate_swarm(k2, self.current_maze_jax, policy, r_params, jnp.array([0, 0]), Runs, steps)
 
         def calc_metrics(res):
             paths = np.array(res[0])
@@ -305,7 +405,7 @@ class SandboxView(QtWidgets.QWidget):
         l_m = calc_metrics(l_res); r_m = calc_metrics(r_res)
 
         self.stats_label.setText(
-            f"<b style='color:#FFD700'>TRANSIT ANALYTICS</b><br>Ghosts: {ghosts} | T_max: {steps}<br><hr style='border:1px solid #444'>"
+            f"<b style='color:#FFD700'>TRANSIT ANALYTICS</b><br>Runs: {Runs} | T_max: {steps}<br><hr style='border:1px solid #444'>"
             f"<b style='color:#28A745'>LEFT PANEL</b><br>SR: {l_m[0]:.1f}% | Colls: {l_m[3]:.1f}<br>MFPT: {l_m[1]:.1f} (σ²:{l_m[2]:.1f})<br><br>"
             f"<b style='color:#00BFFF'>RIGHT PANEL</b><br>SR: {r_m[0]:.1f}% | Colls: {r_m[3]:.1f}<br>MFPT: {r_m[1]:.1f} (σ²:{r_m[2]:.1f})"
         )
@@ -313,7 +413,7 @@ class SandboxView(QtWidgets.QWidget):
         def analyze_meta_behavior(mems_jax):
             mems = np.array(mems_jax)
             
-            # If the array is 2D (ghosts, steps), it's a simple agent (no modes)
+            # If the array is 2D (Runs, steps), it's a simple agent (no modes)
             if mems.ndim < 3:
                 return 0.0
             
@@ -354,7 +454,7 @@ class SandboxView(QtWidgets.QWidget):
         rsr, r_m, r_v, r_c = get_scientific_stats(r_dones, r_hits)
 
         self.stats_label.setText(
-            f"<b style='color:#FFD700'>LAB ANALYSIS</b><br>Ghosts: {ghosts} | T: {steps}<br><hr style='border:1px solid #444'>"
+            f"<b style='color:#FFD700'>LAB ANALYSIS</b><br>Runs: {Runs} | T: {steps}<br><hr style='border:1px solid #444'>"
             f"<b style='color:#28A745'>MODE A (LEFT)</b><br>Success: {lsr:.1f}%<br>Collisions: {l_c:.1f}<br>MFPT Mean: {l_m:.1f}<br>MFPT Var: {l_v:.1f}<br><br>"
             f"<b style='color:#00BFFF'>MODE B (RIGHT)</b><br>Success: {rsr:.1f}%<br>Collisions: {r_c:.1f}<br>MFPT Mean: {r_m:.1f}<br>MFPT Var: {r_v:.1f}"
         )
@@ -379,7 +479,7 @@ class SandboxView(QtWidgets.QWidget):
             self.view_right.set_heatmap(self.current_maze, r_display, cmap='magma', is_sparse=True)
             
         elif lens == "Ghost Swarm":
-            for i in range(min(15, ghosts)):
+            for i in range(min(15, Runs)):
                 self._draw_path(self.view_left, l_paths[i], '#28A74544')
                 self._draw_path(self.view_right, r_paths[i], '#00BFFF44')
                 
@@ -405,8 +505,8 @@ class SandboxView(QtWidgets.QWidget):
                     self._draw_path(self.view_left, l_paths[0], '#28A745')
                     self._draw_path(self.view_right, r_paths[0], '#00BFFF')
 
-        self.view_left.setTitle(f"Mode A │ κ={l_params['kappa']:.1f}", color='#28A745')
-        self.view_right.setTitle(f"Mode B │ κ={r_params['kappa']:.1f}", color='#00BFFF')
+        self.view_left.setTitle(f"Mode A │ κ={l_params['kappa']:.1f} │ Dr={l_params['D_R']:.2f} │ γ={l_params['gamma']:.2f}", color='#28A745')
+        self.view_right.setTitle(f"Mode B │ κ={r_params['kappa']:.1f} │ Dr={r_params['D_R']:.2f} │ γ={r_params['gamma']:.2f}", color='#00BFFF')
 
     def _draw_path(self, view, path_jax, color_hex):
         path = np.array(path_jax)
